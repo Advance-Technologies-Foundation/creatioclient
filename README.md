@@ -1,4 +1,4 @@
-# bpmclient
+# bpmonline.client
 Easy connector .net standard connector for bpmonline
 
 For call bpmonline configuration service from you application just write code:
@@ -15,3 +15,6 @@ or POST:
 ```
 string data = client.ExecutePostRequest(<Url>, <RequestData>);
 ```
+
+# nuget.org
+https://www.nuget.org/packages/bpmonline.client
