@@ -9,9 +9,9 @@ string request = client.CallConfigurationService(<ServiceName>, <MethodName>, <R
 
 For call any bpmonline enpoint you can Get request:
 ```
-string data = client.ExecuteGetRequest(<Url>)
+string data = client.ExecuteGetRequest(<Url>);
 ```
 or POST:
 ```
-string data = client.ExecutePostRequest(<Url>, <RequestData>)
+string data = client.ExecutePostRequest(<Url>, <RequestData>);
 ```
