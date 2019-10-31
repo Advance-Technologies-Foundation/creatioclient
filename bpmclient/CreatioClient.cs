@@ -3,9 +3,9 @@ using System.IO;
 using System.Net;
 using System.Text;
 
-namespace Bpmonline.Client
+namespace Creatio.Client
 {
-	public class BpmonlineClient
+	public class CreatioClient
 	{
 
 		#region Fields: private
@@ -30,7 +30,7 @@ namespace Bpmonline.Client
 
 		#region Methods: Public
 
-		public BpmonlineClient(string appUrl, string userName, string userPassword, bool isNetCore = false, string workspaceId = "0") {
+		public CreatioClient(string appUrl, string userName, string userPassword, bool isNetCore = false, string workspaceId = "0") {
 			_appUrl = appUrl;
 			_userName = userName;
 			_userPassword = userPassword;
@@ -62,13 +62,13 @@ namespace Bpmonline.Client
 		}
 
 		public string ExecuteGetRequest(string url, int requestTimeout = 10000) {
-			HttpWebRequest request = CreateBpmonlineRequest(url, null, requestTimeout);
+			HttpWebRequest request = CreateCreatioRequest(url, null, requestTimeout);
 			request.Method = "GET";
 			return request.GetServiceResponse();
 		}
 
 		public string ExecutePostRequest(string url, string requestData, int requestTimeout = 10000) {
-			HttpWebRequest request = CreateBpmonlineRequest(url, requestData, requestTimeout);
+			HttpWebRequest request = CreateCreatioRequest(url, requestData, requestTimeout);
 			return request.GetServiceResponse();
 		}
 
@@ -76,7 +76,7 @@ namespace Bpmonline.Client
 			FileInfo fileInfo = new FileInfo(filePath);
 			string fileName = fileInfo.Name;
 			string boundary = DateTime.Now.Ticks.ToString("x");
-			HttpWebRequest request = CreateBpmonlineRequest(url);
+			HttpWebRequest request = CreateCreatioRequest(url);
 			request.ContentType = "multipart/form-data; boundary=" + boundary;
 			Stream memStream = new MemoryStream();
 			var boundarybytes = Encoding.ASCII.GetBytes("\r\n--" + boundary + "\r\n");
@@ -108,7 +108,7 @@ namespace Bpmonline.Client
 		}
 
 		public void DownloadFile(string url, string filePath, string requestData) {
-			HttpWebRequest request = CreateBpmonlineRequest(url, requestData);
+			HttpWebRequest request = CreateCreatioRequest(url, requestData);
 			request.SaveToFile(filePath);
 		}
 
@@ -126,9 +126,9 @@ namespace Bpmonline.Client
 		}
 
 		private void AddCsrfToken(HttpWebRequest request) {
-			var bpmcsrf = request.CookieContainer.GetCookies(new Uri(_appUrl))["BPMCSRF"];
-			if (bpmcsrf != null) {
-				request.Headers.Add("BPMCSRF", bpmcsrf.Value);
+			var cookie = request.CookieContainer.GetCookies(new Uri(_appUrl))["BPMCSRF"];
+			if (cookie != null) {
+				request.Headers.Add("BPMCSRF", cookie.Value);
 			}
 		}
 
@@ -136,12 +136,12 @@ namespace Bpmonline.Client
 			if (_isNetCore) {
 				return;
 			}
-			var pingRequest = CreateBpmonlineRequest(PingUrl);
+			var pingRequest = CreateCreatioRequest(PingUrl);
 			pingRequest.Timeout = 60000;
 			_ = pingRequest.GetServiceResponse();
 		}
 
-		private HttpWebRequest CreateBpmonlineRequest(string url, string requestData = null, int requestTimeout = 100000) {
+		private HttpWebRequest CreateCreatioRequest(string url, string requestData = null, int requestTimeout = 100000) {
 			if (AuthCookie == null) {
 				Login();
 				PingApp();

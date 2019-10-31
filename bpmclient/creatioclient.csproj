@@ -7,8 +7,8 @@
     <Company>ATF</Company>
     <PackageId>bpmonline.client</PackageId>
     <Product>bpmonline.client</Product>
-    <AssemblyName>Bpmonline.Client</AssemblyName>
-    <RootNamespace>Bpmonline.Client</RootNamespace>
+    <AssemblyName>Creatio.Client</AssemblyName>
+    <RootNamespace>Creatio.Client</RootNamespace>
     <RepositoryUrl>https://github.com/Advance-Technologies-Foundation/bpmclient</RepositoryUrl>
     <AssemblyVersion>1.0.1.1</AssemblyVersion>
     <FileVersion>1.0.1.1</FileVersion>

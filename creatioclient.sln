@@ -1,11 +1,11 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio Version 16
-VisualStudioVersion = 16.0.28803.452
+# Visual Studio 15
+VisualStudioVersion = 15.0.28307.705
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "bpmclient", "bpmclient\bpmclient.csproj", "{77251B13-DCC7-44DD-B030-1ABC0B3FF861}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "creatioclient", "bpmclient\creatioclient.csproj", "{77251B13-DCC7-44DD-B030-1ABC0B3FF861}"
 EndProject
-Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "bpmclient.example", "bpmclient.example\bpmclient.example.csproj", "{1967A4E4-516E-4F40-81C5-B5F42FB9DEF9}"
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "creatioclient.example", "bpmclient.example\creatioclient.example.csproj", "{1967A4E4-516E-4F40-81C5-B5F42FB9DEF9}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
