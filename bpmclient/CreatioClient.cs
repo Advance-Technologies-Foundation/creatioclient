@@ -10,21 +10,15 @@ namespace Creatio.Client
 
 		#region Fields: private
 
-		private string _appUrl;
-
-		private string _userName;
-
-		private string _userPassword;
-
-		private string _worskpaceId;
-
-		private bool _isNetCore;
+		private readonly string _appUrl;
+		private readonly string _userName;
+		private readonly string _userPassword;
+		private readonly string _worskpaceId;
+		private readonly bool _isNetCore;
 
 		private string LoginUrl => _appUrl + @"/ServiceModel/AuthService.svc/Login";
-
 		private string PingUrl => _appUrl + @"/0/ping";
-
-		private CookieContainer AuthCookie;
+		private CookieContainer _authCookie;
 
 		#endregion
 
@@ -44,8 +38,8 @@ namespace Creatio.Client
 				""UserPassword"":""" + _userPassword + @"""
 			}";
 			var request = CreateRequest(LoginUrl, authData);
-			AuthCookie = new CookieContainer();
-			request.CookieContainer = AuthCookie;
+			_authCookie = new CookieContainer();
+			request.CookieContainer = _authCookie;
 			using (var response = (HttpWebResponse)request.GetResponse()) {
 				if (response.StatusCode == HttpStatusCode.OK) {
 					using (var reader = new StreamReader(response.GetResponseStream())) {
@@ -56,7 +50,7 @@ namespace Creatio.Client
 					}
 					string authName = ".ASPXAUTH";
 					string authCookeValue = response.Cookies[authName].Value;
-					AuthCookie.Add(new Uri(_appUrl), new Cookie(authName, authCookeValue));
+					_authCookie.Add(new Uri(_appUrl), new Cookie(authName, authCookeValue));
 				}
 			}
 		}
@@ -142,13 +136,13 @@ namespace Creatio.Client
 		}
 
 		private HttpWebRequest CreateCreatioRequest(string url, string requestData = null, int requestTimeout = 100000) {
-			if (AuthCookie == null) {
+			if (_authCookie == null) {
 				Login();
 				PingApp();
 			}
 			var request = CreateRequest(url, requestData);
 			request.Timeout = requestTimeout;
-			request.CookieContainer = AuthCookie;
+			request.CookieContainer = _authCookie;
 			AddCsrfToken(request);
 			return request;
 		}
