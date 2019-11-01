@@ -6,7 +6,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\bpmclient\creatioclient.csproj" />
+    <ProjectReference Include="..\creatioclient\creatioclient.csproj" />
   </ItemGroup>
 
 </Project>

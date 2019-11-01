@@ -9,7 +9,7 @@
     <Product>bpmonline.client</Product>
     <AssemblyName>Creatio.Client</AssemblyName>
     <RootNamespace>Creatio.Client</RootNamespace>
-    <RepositoryUrl>https://github.com/Advance-Technologies-Foundation/bpmclient</RepositoryUrl>
+    <RepositoryUrl>https://github.com/Advance-Technologies-Foundation/creatioclient</RepositoryUrl>
     <AssemblyVersion>1.0.1.1</AssemblyVersion>
     <FileVersion>1.0.1.1</FileVersion>
     <Version>1.0.1</Version>

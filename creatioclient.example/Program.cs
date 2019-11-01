@@ -1,7 +1,7 @@
 ﻿using System;
 using Creatio.Client;
 
-namespace bpmclient.example
+namespace creatioclient.example
 {
 	class Program
 	{
