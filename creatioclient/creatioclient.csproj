@@ -2,11 +2,11 @@
 
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
-    <Description>.net client for call bpmonline api in simple way (.net standart campatible)</Description>
+    <Description>.net client for call creatio api in simple way (.net standart campatible)</Description>
     <Authors>a.technologies.foundation@gmail.com</Authors>
     <Company>ATF</Company>
-    <PackageId>bpmonline.client</PackageId>
-    <Product>bpmonline.client</Product>
+    <PackageId>creatio.client</PackageId>
+    <Product>creatio.client</Product>
     <AssemblyName>Creatio.Client</AssemblyName>
     <RootNamespace>Creatio.Client</RootNamespace>
     <RepositoryUrl>https://github.com/Advance-Technologies-Foundation/creatioclient</RepositoryUrl>
