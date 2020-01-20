@@ -13,8 +13,9 @@ namespace Creatio.Client
 		private readonly string _appUrl;
 		private readonly string _userName;
 		private readonly string _userPassword;
-		private readonly string _worskpaceId;
+		private readonly string _worskpaceId = "0";
 		private readonly bool _isNetCore;
+		private readonly bool _useUntrustedSSL = false;
 
 		private string LoginUrl => _appUrl + @"/ServiceModel/AuthService.svc/Login";
 		private string PingUrl => _appUrl + @"/0/ping";
@@ -29,6 +30,21 @@ namespace Creatio.Client
 			_userName = userName;
 			_userPassword = userPassword;
 			_worskpaceId = workspaceId;
+			_isNetCore = isNetCore;
+		}
+
+		public CreatioClient(string appUrl, string userName, string userPassword, bool isNetCore = false) {
+			_appUrl = appUrl;
+			_userName = userName;
+			_userPassword = userPassword;
+			_isNetCore = isNetCore;
+		}
+
+		public CreatioClient(string appUrl, string userName, string userPassword, bool UseUntrustedSSL, bool isNetCore = false) {
+			_appUrl = appUrl;
+			_userName = userName;
+			_userPassword = userPassword;
+			_useUntrustedSSL = UseUntrustedSSL;
 			_isNetCore = isNetCore;
 		}
 
@@ -141,6 +157,9 @@ namespace Creatio.Client
 				PingApp();
 			}
 			var request = CreateRequest(url, requestData);
+			if (_useUntrustedSSL) {
+				request.ServerCertificateValidationCallback = (message, cert, chain, errors) => { return true; };
+			}
 			request.Timeout = requestTimeout;
 			request.CookieContainer = _authCookie;
 			AddCsrfToken(request);
@@ -149,6 +168,9 @@ namespace Creatio.Client
 
 		private HttpWebRequest CreateRequest(string url, string requestData = null) {
 			HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+			if (_useUntrustedSSL) {
+				request.ServerCertificateValidationCallback = (message, cert, chain, errors) => { return true; };
+			}
 			request.ContentType = "application/json";
 			request.Method = "POST";
 			request.KeepAlive = true;
