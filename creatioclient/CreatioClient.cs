@@ -1,10 +1,28 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
+using System.Threading.Tasks;
+using System.Web;
+using Newtonsoft.Json;
 
 namespace Creatio.Client
 {
+
+
+	public class TokenResponse
+	{
+		[JsonProperty("access_token")]
+		public string AccessToken { get; set; }
+		[JsonProperty("expires_in")]
+		public int ExpiresIn { get; set; }
+		[JsonProperty("token_type")]
+		public string TokenType { get; set; }
+	}
+
 	public class CreatioClient
 	{
 
@@ -20,18 +38,42 @@ namespace Creatio.Client
 		private string LoginUrl => _appUrl + @"/ServiceModel/AuthService.svc/Login";
 		private string PingUrl => _appUrl + @"/0/ping";
 		private CookieContainer _authCookie;
+		private string oauthToken;
+
+		private static async Task<string> GetAccessTokenByClientCredentials(string authApp, string clientId, string clientSecret) {
+			using (HttpClient client = new HttpClient()) {
+				var body = new Dictionary<string, string>()
+				{
+					{ "client_id", clientId },
+					{ "client_secret", clientSecret },
+					{ "grant_type", "client_credentials" }
+				};
+				HttpContent httpContent = new FormUrlEncodedContent(body);
+				HttpResponseMessage response = await client.PostAsync(authApp, httpContent);
+				string content = await response.Content.ReadAsStringAsync();
+				TokenResponse token = JsonConvert.DeserializeObject<TokenResponse>(content);
+				return token.AccessToken;
+			}
+		}
+
+
+		public static CreatioClient CreateOAuth20Client(string app, string authApp, string clientId, string clientSecret) {
+			var client = new CreatioClient(app);
+			client.oauthToken = GetAccessTokenByClientCredentials(authApp, clientId, clientSecret).Result;
+			return client;
+		}
 
 		#endregion
 
 		#region Methods: Public
 
-		public CreatioClient(string appUrl, string userName, string userPassword, bool isNetCore = false, string workspaceId = "0") {
-			_appUrl = appUrl;
-			_userName = userName;
-			_userPassword = userPassword;
-			_worskpaceId = workspaceId;
-			_isNetCore = isNetCore;
-		}
+		//public CreatioClient(string appUrl, string userName, string userPassword, bool isNetCore = false) {
+		//	_appUrl = appUrl;
+		//	_userName = userName;
+		//	_userPassword = userPassword;
+		//	_worskpaceId = workspaceId;
+		//	_isNetCore = isNetCore;
+		//}
 
 		public CreatioClient(string appUrl, string userName, string userPassword, bool isNetCore = false) {
 			_appUrl = appUrl;
@@ -46,6 +88,10 @@ namespace Creatio.Client
 			_userPassword = userPassword;
 			_useUntrustedSSL = UseUntrustedSSL;
 			_isNetCore = isNetCore;
+		}
+
+		private CreatioClient(string appUrl) {
+			_appUrl = appUrl;
 		}
 
 		public void Login() {
@@ -78,8 +124,23 @@ namespace Creatio.Client
 		}
 
 		public string ExecutePostRequest(string url, string requestData, int requestTimeout = 10000) {
-			HttpWebRequest request = CreateCreatioRequest(url, requestData, requestTimeout);
-			return request.GetServiceResponse();
+
+			if (oauthToken != null) {
+				using (HttpClient client = new HttpClient()) {
+					client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", oauthToken);
+					var data = new {
+						operation = "CanManageSolution"
+					};
+					var json = JsonConvert.SerializeObject(data);
+					var stringContent = new StringContent(json, UnicodeEncoding.UTF8, "application/json");
+					HttpResponseMessage response =  client.PostAsync(url, stringContent).Result;
+					string content = response.Content.ReadAsStringAsync().Result;
+					return content;
+				}
+			} else {
+				HttpWebRequest request = CreateCreatioRequest(url, requestData, requestTimeout);
+				return request.GetServiceResponse();
+			}
 		}
 
 		public string UploadFile(string url, string filePath) {
@@ -152,7 +213,7 @@ namespace Creatio.Client
 		}
 
 		private HttpWebRequest CreateCreatioRequest(string url, string requestData = null, int requestTimeout = 100000) {
-			if (_authCookie == null) {
+			if (_authCookie == null && string.IsNullOrEmpty(oauthToken)) {
 				Login();
 				PingApp();
 			}
@@ -161,8 +222,13 @@ namespace Creatio.Client
 				request.ServerCertificateValidationCallback = (message, cert, chain, errors) => { return true; };
 			}
 			request.Timeout = requestTimeout;
-			request.CookieContainer = _authCookie;
-			AddCsrfToken(request);
+
+			if (!string.IsNullOrEmpty(oauthToken)) {
+				
+			} else {
+				request.CookieContainer = _authCookie;
+				AddCsrfToken(request);
+			}
 			return request;
 		}
 
