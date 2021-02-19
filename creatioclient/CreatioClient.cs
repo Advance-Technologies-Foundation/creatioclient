@@ -57,8 +57,8 @@ namespace Creatio.Client
 		}
 
 
-		public static CreatioClient CreateOAuth20Client(string app, string authApp, string clientId, string clientSecret) {
-			var client = new CreatioClient(app);
+		public static CreatioClient CreateOAuth20Client(string app, string authApp, string clientId, string clientSecret, bool isNetCore = false) {
+			var client = new CreatioClient(app, isNetCore);
 			client.oauthToken = GetAccessTokenByClientCredentials(authApp, clientId, clientSecret).Result;
 			return client;
 		}
@@ -90,8 +90,9 @@ namespace Creatio.Client
 			_isNetCore = isNetCore;
 		}
 
-		private CreatioClient(string appUrl) {
+		private CreatioClient(string appUrl, bool isNetCore = false) {
 			_appUrl = appUrl;
+			_isNetCore = isNetCore;
 		}
 
 		public void Login() {
