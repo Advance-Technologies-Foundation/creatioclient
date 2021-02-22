@@ -125,15 +125,10 @@ namespace Creatio.Client
 		}
 
 		public string ExecutePostRequest(string url, string requestData, int requestTimeout = 10000) {
-
 			if (oauthToken != null) {
 				using (HttpClient client = new HttpClient()) {
 					client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", oauthToken);
-					var data = new {
-						operation = "CanManageSolution"
-					};
-					var json = JsonConvert.SerializeObject(data);
-					var stringContent = new StringContent(json, UnicodeEncoding.UTF8, "application/json");
+					var stringContent = new StringContent(requestData, UnicodeEncoding.UTF8, "application/json");
 					HttpResponseMessage response =  client.PostAsync(url, stringContent).Result;
 					string content = response.Content.ReadAsStringAsync().Result;
 					return content;
