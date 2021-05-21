@@ -6,7 +6,6 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Threading.Tasks;
-using System.Web;
 using Newtonsoft.Json;
 
 namespace Creatio.Client
@@ -100,9 +99,10 @@ namespace Creatio.Client
 				""UserName"":""" + _userName + @""",
 				""UserPassword"":""" + _userPassword + @"""
 			}";
-			var request = CreateRequest(LoginUrl, authData);
+			var request = CreateRequest(LoginUrl);
 			_authCookie = new CookieContainer();
 			request.CookieContainer = _authCookie;
+			ApplyRequestData(request, authData);
 			using (var response = (HttpWebResponse)request.GetResponse()) {
 				if (response.StatusCode == HttpStatusCode.OK) {
 					using (var reader = new StreamReader(response.GetResponseStream())) {
@@ -111,9 +111,9 @@ namespace Creatio.Client
 							throw new UnauthorizedAccessException($"Unauthorized {_userName} for {_appUrl}");
 						}
 					}
-					string authName = ".ASPXAUTH";
-					string authCookeValue = response.Cookies[authName].Value;
-					_authCookie.Add(new Uri(_appUrl), new Cookie(authName, authCookeValue));
+					var authCookieName = ".ASPXAUTH";
+					var authCookieValue = response.Cookies[authCookieName].Value;
+					_authCookie.Add(new Uri(_appUrl), new Cookie(authCookieName, authCookieValue));
 				}
 			}
 		}
@@ -203,8 +203,10 @@ namespace Creatio.Client
 			if (_isNetCore) {
 				return;
 			}
-			var pingRequest = CreateCreatioRequest(PingUrl);
+
+			var pingRequest =  CreateCreatioRequest(PingUrl);
 			pingRequest.Timeout = 60000;
+			pingRequest.ContentLength = 0;
 			_ = pingRequest.GetServiceResponse();
 		}
 
@@ -213,22 +215,24 @@ namespace Creatio.Client
 				Login();
 				PingApp();
 			}
-			var request = CreateRequest(url, requestData);
+			var request = CreateRequest(url);
 			if (_useUntrustedSSL) {
 				request.ServerCertificateValidationCallback = (message, cert, chain, errors) => { return true; };
 			}
 			request.Timeout = requestTimeout;
 
 			if (!string.IsNullOrEmpty(oauthToken)) {
-				
+
 			} else {
+
 				request.CookieContainer = _authCookie;
 				AddCsrfToken(request);
 			}
+			ApplyRequestData(request, requestData);
 			return request;
 		}
 
-		private HttpWebRequest CreateRequest(string url, string requestData = null) {
+		private HttpWebRequest CreateRequest(string url) {
 			HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
 			if (_useUntrustedSSL) {
 				request.ServerCertificateValidationCallback = (message, cert, chain, errors) => { return true; };
@@ -236,6 +240,10 @@ namespace Creatio.Client
 			request.ContentType = "application/json";
 			request.Method = "POST";
 			request.KeepAlive = true;
+			return request;
+		}
+
+		private void ApplyRequestData(HttpWebRequest request, string requestData = null) {
 			if (!string.IsNullOrEmpty(requestData)) {
 				using (var requestStream = request.GetRequestStream()) {
 					using (var writer = new StreamWriter(requestStream)) {
@@ -243,7 +251,6 @@ namespace Creatio.Client
 					}
 				}
 			}
-			return request;
 		}
 
 		#endregion
