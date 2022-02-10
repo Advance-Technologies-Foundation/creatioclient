@@ -244,12 +244,14 @@ namespace Creatio.Client
 		}
 
 		private void ApplyRequestData(HttpWebRequest request, string requestData = null) {
-			if (!string.IsNullOrEmpty(requestData)) {
-				using (var requestStream = request.GetRequestStream()) {
-					using (var writer = new StreamWriter(requestStream)) {
-						writer.Write(requestData);
-					}
-				}
+			if (string.IsNullOrEmpty(requestData)) {
+				request.ContentLength = 0;
+				return;
+			}
+			var bytes = Encoding.ASCII.GetBytes(requestData);
+			request.ContentLength = bytes.Length;
+			using (var dataStream = request.GetRequestStream()) {
+				dataStream.Write(bytes, 0, bytes.Length);
 			}
 		}
 
