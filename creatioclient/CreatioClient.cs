@@ -48,7 +48,7 @@ namespace Creatio.Client
 					{ "grant_type", "client_credentials" }
 				};
 				HttpContent httpContent = new FormUrlEncodedContent(body);
-				HttpResponseMessage response = await client.PostAsync(authApp, httpContent);
+				HttpResponseMessage response = await client.PostAsync(authApp, httpContent).ConfigureAwait(false);
 				string content = await response.Content.ReadAsStringAsync();
 				TokenResponse token = JsonConvert.DeserializeObject<TokenResponse>(content);
 				return token.AccessToken;
