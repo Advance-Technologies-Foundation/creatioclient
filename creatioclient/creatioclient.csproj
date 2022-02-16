@@ -10,9 +10,9 @@
     <AssemblyName>Creatio.Client</AssemblyName>
     <RootNamespace>Creatio.Client</RootNamespace>
     <RepositoryUrl>https://github.com/Advance-Technologies-Foundation/creatioclient</RepositoryUrl>
-    <AssemblyVersion>1.0.2.2</AssemblyVersion>
-    <FileVersion>1.0.2.2</FileVersion>
-    <Version>1.0.5</Version>
+    <AssemblyVersion>1.0.2.3</AssemblyVersion>
+    <FileVersion>1.0.2.3</FileVersion>
+    <Version>1.0.6</Version>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
   </PropertyGroup>
 
