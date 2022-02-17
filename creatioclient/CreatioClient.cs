@@ -11,6 +11,7 @@ using Newtonsoft.Json;
 namespace Creatio.Client
 {
 
+	#region Class: TokenResponse
 
 	public class TokenResponse
 	{
@@ -22,7 +23,36 @@ namespace Creatio.Client
 		public string TokenType { get; set; }
 	}
 
-	public class CreatioClient
+	#endregion
+
+	#region Interface: ICreatioClient
+
+	public interface ICreatioClient
+	{
+
+		#region Methods: Public
+
+		void Login();
+
+		string ExecuteGetRequest(string url, int requestTimeout = 10000);
+
+		string ExecutePostRequest(string url, string requestData, int requestTimeout = 10000);
+
+		string UploadFile(string url, string filePath);
+
+		void DownloadFile(string url, string filePath, string requestData);
+
+		string CallConfigurationService(string serviceName, string serviceMethod, string requestData, int requestTimeout = 10000);
+
+		#endregion
+
+	}
+
+	#endregion
+
+	#region Class: CreatioClient
+
+	public class CreatioClient : ICreatioClient
 	{
 
 		#region Fields: private
@@ -65,14 +95,6 @@ namespace Creatio.Client
 		#endregion
 
 		#region Methods: Public
-
-		//public CreatioClient(string appUrl, string userName, string userPassword, bool isNetCore = false) {
-		//	_appUrl = appUrl;
-		//	_userName = userName;
-		//	_userPassword = userPassword;
-		//	_worskpaceId = workspaceId;
-		//	_isNetCore = isNetCore;
-		//}
 
 		public CreatioClient(string appUrl, string userName, string userPassword, bool isNetCore = false) {
 			_appUrl = appUrl;
@@ -186,7 +208,7 @@ namespace Creatio.Client
 
 		#endregion
 
-		#region Methods: private
+		#region Methods: Private
 
 		private string CreateConfigurationServiceUrl(string serviceName, string methodName) {
 			return $"{_appUrl}/{_worskpaceId}/rest/{serviceName}/{methodName}";
@@ -258,5 +280,7 @@ namespace Creatio.Client
 		#endregion
 
 	}
+
+	#endregion
 
 }
