@@ -151,7 +151,7 @@ namespace Creatio.Client
 				using (HttpClient client = new HttpClient()) {
 					client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", oauthToken);
 					var stringContent = new StringContent(requestData, UnicodeEncoding.UTF8, "application/json");
-					HttpResponseMessage response =  client.PostAsync(url, stringContent).Result;
+					HttpResponseMessage response = client.PostAsync(url, stringContent).Result;
 					string content = response.Content.ReadAsStringAsync().Result;
 					return content;
 				}
@@ -199,6 +199,7 @@ namespace Creatio.Client
 		public void DownloadFile(string url, string filePath, string requestData) {
 			HttpWebRequest request = CreateCreatioRequest(url, requestData);
 			request.SaveToFile(filePath);
+
 		}
 
 		public string CallConfigurationService(string serviceName, string serviceMethod, string requestData, int requestTimeout = 10000) {
@@ -225,8 +226,7 @@ namespace Creatio.Client
 			if (_isNetCore) {
 				return;
 			}
-
-			var pingRequest =  CreateCreatioRequest(PingUrl);
+			var pingRequest = CreateCreatioRequest(PingUrl);
 			pingRequest.Timeout = 60000;
 			pingRequest.ContentLength = 0;
 			_ = pingRequest.GetServiceResponse();
@@ -242,11 +242,9 @@ namespace Creatio.Client
 				request.ServerCertificateValidationCallback = (message, cert, chain, errors) => { return true; };
 			}
 			request.Timeout = requestTimeout;
-
 			if (!string.IsNullOrEmpty(oauthToken)) {
-
+				request.Headers.Add("Authorization", "Bearer " + oauthToken);
 			} else {
-
 				request.CookieContainer = _authCookie;
 				AddCsrfToken(request);
 			}
