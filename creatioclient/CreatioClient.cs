@@ -40,6 +40,8 @@ namespace Creatio.Client
 
 		string UploadFile(string url, string filePath);
 
+		string UploadAlmFile(string url, string filePath);
+
 		void DownloadFile(string url, string filePath, string requestData);
 
 		string CallConfigurationService(string serviceName, string serviceMethod, string requestData, int requestTimeout = 10000);
@@ -185,6 +187,30 @@ namespace Creatio.Client
 				}
 			}
 			memStream.Write(endBoundaryBytes, 0, endBoundaryBytes.Length);
+			request.ContentLength = memStream.Length;
+			using (Stream requestStream = request.GetRequestStream()) {
+				memStream.Position = 0;
+				byte[] tempBuffer = new byte[memStream.Length];
+				memStream.Read(tempBuffer, 0, tempBuffer.Length);
+				memStream.Close();
+				requestStream.Write(tempBuffer, 0, tempBuffer.Length);
+			}
+			return request.GetServiceResponse();
+		}
+
+		public string UploadAlmFile(string url, string filePath) {
+			FileInfo fileInfo = new FileInfo(filePath);
+			string fileName = fileInfo.Name;
+			HttpWebRequest request = CreateCreatioRequest(url);
+			request.ContentType = "Content-Type: application/octet-stream";
+			Stream memStream = new MemoryStream();
+			using (var fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read)) {
+				var buffer = new byte[1024];
+				var bytesRead = 0;
+				while ((bytesRead = fileStream.Read(buffer, 0, buffer.Length)) != 0) {
+					memStream.Write(buffer, 0, bytesRead);
+				}
+			}
 			request.ContentLength = memStream.Length;
 			using (Stream requestStream = request.GetRequestStream()) {
 				memStream.Position = 0;
