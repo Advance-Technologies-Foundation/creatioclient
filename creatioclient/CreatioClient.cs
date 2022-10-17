@@ -68,6 +68,9 @@ namespace Creatio.Client
 
 		private string LoginUrl => _appUrl + @"/ServiceModel/AuthService.svc/Login";
 		private string PingUrl => _appUrl + @"/0/ping";
+
+		public bool SkipPing { get; set; }
+
 		private CookieContainer _authCookie;
 		private string oauthToken;
 
@@ -249,12 +252,12 @@ namespace Creatio.Client
 			}
 		}
 
-		private void PingApp() {
+		private void PingApp(int pingTimeout) {
 			if (_isNetCore) {
 				return;
 			}
 			var pingRequest = CreateCreatioRequest(PingUrl);
-			pingRequest.Timeout = 60000;
+			pingRequest.Timeout = pingTimeout;
 			pingRequest.ContentLength = 0;
 			_ = pingRequest.GetServiceResponse();
 		}
@@ -262,7 +265,9 @@ namespace Creatio.Client
 		private HttpWebRequest CreateCreatioRequest(string url, string requestData = null, int requestTimeout = 100000) {
 			if (_authCookie == null && string.IsNullOrEmpty(oauthToken)) {
 				Login();
-				PingApp();
+				if (!SkipPing) {
+					PingApp(requestTimeout);
+				}
 			}
 			var request = CreateRequest(url);
 			if (_useUntrustedSSL) {
