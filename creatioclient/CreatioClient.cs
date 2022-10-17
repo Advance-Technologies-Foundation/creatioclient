@@ -153,6 +153,7 @@ namespace Creatio.Client
 				using (HttpClient client = new HttpClient()) {
 					client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", oauthToken);
 					var stringContent = new StringContent(requestData, UnicodeEncoding.UTF8, "application/json");
+					client.Timeout = new TimeSpan(0,0,0,0,requestTimeout);
 					HttpResponseMessage response = client.PostAsync(url, stringContent).Result;
 					string content = response.Content.ReadAsStringAsync().Result;
 					return content;
