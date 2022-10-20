@@ -145,6 +145,31 @@ namespace Creatio.Client
 			}
 		}
 
+		public void Login(int requestTimeout) {
+			var authData = @"{
+				""UserName"":""" + _userName + @""",
+				""UserPassword"":""" + _userPassword + @"""
+			}";
+			var request = CreateRequest(LoginUrl);
+			request.Timeout = requestTimeout;
+			_authCookie = new CookieContainer();
+			request.CookieContainer = _authCookie;
+			ApplyRequestData(request, authData);
+			using (var response = (HttpWebResponse)request.GetResponse()) {
+				if (response.StatusCode == HttpStatusCode.OK) {
+					using (var reader = new StreamReader(response.GetResponseStream())) {
+						var responseMessage = reader.ReadToEnd();
+						if (responseMessage.Contains("\"Code\":1")) {
+							throw new UnauthorizedAccessException($"Unauthorized {_userName} for {_appUrl}");
+						}
+					}
+					var authCookieName = ".ASPXAUTH";
+					var authCookieValue = response.Cookies[authCookieName].Value;
+					_authCookie.Add(new Uri(_appUrl), new Cookie(authCookieName, authCookieValue));
+				}
+			}
+		}
+
 		public string ExecuteGetRequest(string url, int requestTimeout = 10000) {
 			HttpWebRequest request = CreateCreatioRequest(url, null, requestTimeout);
 			request.Method = "GET";
@@ -264,8 +289,10 @@ namespace Creatio.Client
 
 		private HttpWebRequest CreateCreatioRequest(string url, string requestData = null, int requestTimeout = 100000) {
 			if (_authCookie == null && string.IsNullOrEmpty(oauthToken)) {
-				Login();
-				if (!SkipPing) {
+				if (SkipPing) {
+					Login(requestTimeout);
+				} else {
+					Login();
 					PingApp(requestTimeout);
 				}
 			}
