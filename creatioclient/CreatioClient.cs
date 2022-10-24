@@ -34,17 +34,17 @@ namespace Creatio.Client
 
 		void Login();
 
-		string ExecuteGetRequest(string url, int requestTimeout = 10000);
+		string ExecuteGetRequest(string url, int requestTimeout = 100000);
 
-		string ExecutePostRequest(string url, string requestData, int requestTimeout = 10000);
+		string ExecutePostRequest(string url, string requestData, int requestTimeout = 100000);
 
-		string UploadFile(string url, string filePath);
+		string UploadFile(string url, string filePath, int requestTimeout = 100000);
 
 		string UploadAlmFile(string url, string filePath);
 
-		void DownloadFile(string url, string filePath, string requestData);
+		void DownloadFile(string url, string filePath, string requestData, int requestTimeout = 100000);
 
-		string CallConfigurationService(string serviceName, string serviceMethod, string requestData, int requestTimeout = 10000);
+		string CallConfigurationService(string serviceName, string serviceMethod, string requestData, int requestTimeout = 100000);
 
 		#endregion
 
@@ -65,6 +65,7 @@ namespace Creatio.Client
 		private readonly string _worskpaceId = "0";
 		private readonly bool _isNetCore;
 		private readonly bool _useUntrustedSSL = false;
+
 
 		private string LoginUrl => _appUrl + @"/ServiceModel/AuthService.svc/Login";
 		private string PingUrl => _appUrl + @"/0/ping";
@@ -170,7 +171,7 @@ namespace Creatio.Client
 			}
 		}
 
-		public string ExecuteGetRequest(string url, int requestTimeout = 10000) {
+		public string ExecuteGetRequest(string url, int requestTimeout = 100000) {
 			HttpWebRequest request = CreateCreatioRequest(url, null, requestTimeout);
 			request.Method = "GET";
 			return request.GetServiceResponse();
@@ -192,7 +193,7 @@ namespace Creatio.Client
 			}
 		}
 
-		public string UploadFile(string url, string filePath) {
+		public string UploadFile(string url, string filePath, int defaultTimeout = 100000) {
 			FileInfo fileInfo = new FileInfo(filePath);
 			string fileName = fileInfo.Name;
 			string boundary = DateTime.Now.Ticks.ToString("x");
@@ -251,13 +252,12 @@ namespace Creatio.Client
 			return request.GetServiceResponse();
 		}
 
-		public void DownloadFile(string url, string filePath, string requestData) {
-			HttpWebRequest request = CreateCreatioRequest(url, requestData);
+		public void DownloadFile(string url, string filePath, string requestData, int requestTimeout = 100000) {
+			HttpWebRequest request = CreateCreatioRequest(url, requestData, requestTimeout);
 			request.SaveToFile(filePath);
-
 		}
 
-		public string CallConfigurationService(string serviceName, string serviceMethod, string requestData, int requestTimeout = 10000) {
+		public string CallConfigurationService(string serviceName, string serviceMethod, string requestData, int requestTimeout = 100000) {
 			var executeUrl = CreateConfigurationServiceUrl(serviceName, serviceMethod);
 			return ExecutePostRequest(executeUrl, requestData, requestTimeout);
 		}
