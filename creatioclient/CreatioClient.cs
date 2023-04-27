@@ -316,7 +316,7 @@ namespace Creatio.Client
 			if (_useUntrustedSSL) {
 				request.ServerCertificateValidationCallback = (message, cert, chain, errors) => { return true; };
 			}
-			request.ContentType = "application/json";
+			request.ContentType = "application/json; charset=utf-8";
 			request.Method = "POST";
 			request.KeepAlive = true;
 			return request;
