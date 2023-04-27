@@ -327,7 +327,7 @@ namespace Creatio.Client
 				request.ContentLength = 0;
 				return;
 			}
-			var bytes = Encoding.ASCII.GetBytes(requestData);
+			var bytes = Encoding.UTF8.GetBytes(requestData);
 			request.ContentLength = bytes.Length;
 			using (var dataStream = request.GetRequestStream()) {
 				dataStream.Write(bytes, 0, bytes.Length);
