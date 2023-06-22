@@ -54,8 +54,7 @@ namespace Creatio.Client
 
 	#region Class: CreatioClient
 
-	public class CreatioClient : ICreatioClient
-	{
+	public class CreatioClient : ICreatioClient {
 
 		#region Fields: private
 
@@ -73,6 +72,13 @@ namespace Creatio.Client
 		public bool SkipPing { get; set; }
 
 		private CookieContainer _authCookie;
+		private CookieContainer AuthCookie {
+			get {
+				InitAuthCookie();
+				return _authCookie;
+			}
+		}
+
 		private string oauthToken;
 
 		private static async Task<string> GetAccessTokenByClientCredentials(string authApp, string clientId, string clientSecret) {
@@ -182,14 +188,21 @@ namespace Creatio.Client
 				using (HttpClient client = new HttpClient()) {
 					client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", oauthToken);
 					var stringContent = new StringContent(requestData, UnicodeEncoding.UTF8, "application/json");
-					client.Timeout = new TimeSpan(0,0,0,0,requestTimeout);
+					client.Timeout = new TimeSpan(0, 0, 0, 0, requestTimeout);
 					HttpResponseMessage response = client.PostAsync(url, stringContent).Result;
 					string content = response.Content.ReadAsStringAsync().Result;
 					return content;
 				}
 			} else {
-				HttpWebRequest request = CreateCreatioRequest(url, requestData, requestTimeout);
-				return request.GetServiceResponse();
+				HttpClientHandler handler = new HttpClientHandler();
+				handler.CookieContainer = AuthCookie;
+				using (HttpClient client = new HttpClient(handler)) {
+					var stringContent = new StringContent(requestData, UnicodeEncoding.UTF8, "application/json");
+					client.Timeout = new TimeSpan(0, 0, 0, 0, requestTimeout);
+					HttpResponseMessage response = client.PostAsync(url, stringContent).Result;
+					string content = response.Content.ReadAsStringAsync().Result;
+					return content;
+				}
 			}
 		}
 
@@ -287,7 +300,7 @@ namespace Creatio.Client
 			_ = pingRequest.GetServiceResponse();
 		}
 
-		private HttpWebRequest CreateCreatioRequest(string url, string requestData = null, int requestTimeout = 100000) {
+		private void InitAuthCookie(int requestTimeout = 100000) {
 			if (_authCookie == null && string.IsNullOrEmpty(oauthToken)) {
 				if (SkipPing) {
 					Login(requestTimeout);
@@ -295,7 +308,10 @@ namespace Creatio.Client
 					Login();
 					PingApp(requestTimeout);
 				}
-			}
+			}	
+		}
+
+		private HttpWebRequest CreateCreatioRequest(string url, string requestData = null, int requestTimeout = 100000) {
 			var request = CreateRequest(url);
 			if (_useUntrustedSSL) {
 				request.ServerCertificateValidationCallback = (message, cert, chain, errors) => { return true; };
@@ -304,7 +320,7 @@ namespace Creatio.Client
 			if (!string.IsNullOrEmpty(oauthToken)) {
 				request.Headers.Add("Authorization", "Bearer " + oauthToken);
 			} else {
-				request.CookieContainer = _authCookie;
+				request.CookieContainer = AuthCookie;
 				AddCsrfToken(request);
 			}
 			ApplyRequestData(request, requestData);
