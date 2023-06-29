@@ -197,6 +197,7 @@ namespace Creatio.Client
 				HttpClientHandler handler = new HttpClientHandler();
 				handler.CookieContainer = AuthCookie;
 				using (HttpClient client = new HttpClient(handler)) {
+					AddCsrfToken(client);
 					var stringContent = new StringContent(requestData, UnicodeEncoding.UTF8, "application/json");
 					client.Timeout = new TimeSpan(0, 0, 0, 0, requestTimeout);
 					HttpResponseMessage response = client.PostAsync(url, stringContent).Result;
@@ -287,6 +288,13 @@ namespace Creatio.Client
 			var cookie = request.CookieContainer.GetCookies(new Uri(_appUrl))["BPMCSRF"];
 			if (cookie != null) {
 				request.Headers.Add("BPMCSRF", cookie.Value);
+			}
+		}
+
+		private void AddCsrfToken(HttpClient client) {
+			var cookie = AuthCookie?.GetCookies(new Uri(_appUrl))["BPMCSRF"];
+			if (cookie != null) {
+				client.DefaultRequestHeaders.Add("BPMCSRF", cookie.Value);
 			}
 		}
 
