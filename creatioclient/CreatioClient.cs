@@ -5,6 +5,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 
@@ -298,13 +299,23 @@ namespace Creatio.Client
 			}
 		}
 
+		private bool TryPingApp(int pingTimeout, int attemtCount) {
+			for (int i = 0; i < attemtCount; i++) {
+				try {
+					PingApp(pingTimeout/attemtCount);
+					return true;
+				} catch {
+					Thread.Sleep(1000);
+				}
+			}
+			return false;
+		}
+
 		private void PingApp(int pingTimeout) {
 			if (_isNetCore) {
 				return;
 			}
-			var pingRequest = CreateCreatioRequest(PingUrl);
-			pingRequest.Timeout = pingTimeout;
-			pingRequest.ContentLength = 0;
+			var pingRequest = CreateCreatioRequest(PingUrl, null, pingTimeout);
 			_ = pingRequest.GetServiceResponse();
 		}
 
@@ -313,8 +324,8 @@ namespace Creatio.Client
 				if (SkipPing) {
 					Login(requestTimeout);
 				} else {
-					Login();
-					PingApp(requestTimeout);
+					Login(requestTimeout);
+					TryPingApp(requestTimeout, 3);
 				}
 			}	
 		}
