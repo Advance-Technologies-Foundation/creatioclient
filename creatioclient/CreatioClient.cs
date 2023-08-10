@@ -55,7 +55,8 @@ namespace Creatio.Client
 
 	#region Class: CreatioClient
 
-	public class CreatioClient : ICreatioClient {
+	public class CreatioClient : ICreatioClient
+	{
 
 		#region Fields: private
 
@@ -64,7 +65,7 @@ namespace Creatio.Client
 		private readonly string _userPassword;
 		private readonly string _worskpaceId = "0";
 		private readonly bool _isNetCore;
-		private readonly bool _useUntrustedSSL = false;
+		private readonly bool _useUntrustedSSL = true;
 
 
 		private string LoginUrl => _appUrl + @"/ServiceModel/AuthService.svc/Login";
@@ -185,8 +186,9 @@ namespace Creatio.Client
 		}
 
 		public string ExecutePostRequest(string url, string requestData, int requestTimeout = 10000) {
+			HttpClientHandler handler = CreateCreatioHandler();
 			if (oauthToken != null) {
-				using (HttpClient client = new HttpClient()) {
+				using (HttpClient client = new HttpClient(handler)) {
 					client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", oauthToken);
 					var stringContent = new StringContent(requestData, UnicodeEncoding.UTF8, "application/json");
 					client.Timeout = new TimeSpan(0, 0, 0, 0, requestTimeout);
@@ -195,7 +197,6 @@ namespace Creatio.Client
 					return content;
 				}
 			} else {
-				HttpClientHandler handler = new HttpClientHandler();
 				handler.CookieContainer = AuthCookie;
 				using (HttpClient client = new HttpClient(handler)) {
 					AddCsrfToken(client);
@@ -206,6 +207,15 @@ namespace Creatio.Client
 					return content;
 				}
 			}
+		}
+
+		HttpClientHandler CreateCreatioHandler() {
+			var handler = new HttpClientHandler();
+			handler.ClientCertificateOptions = ClientCertificateOption.Manual;
+			handler.ServerCertificateCustomValidationCallback = (httpRequestMessage, cert, certChail, sslPolicyErrors) => {
+				return true;
+			};
+			return handler;
 		}
 
 		public string UploadFile(string url, string filePath, int defaultTimeout = 100000) {
@@ -302,7 +312,7 @@ namespace Creatio.Client
 		private bool TryPingApp(int pingTimeout, int attemtCount) {
 			for (int i = 0; i < attemtCount; i++) {
 				try {
-					PingApp(pingTimeout/attemtCount);
+					PingApp(pingTimeout / attemtCount);
 					return true;
 				} catch {
 					Thread.Sleep(1000);
@@ -327,7 +337,7 @@ namespace Creatio.Client
 					Login(requestTimeout);
 					TryPingApp(requestTimeout, 3);
 				}
-			}	
+			}
 		}
 
 		private HttpWebRequest CreateCreatioRequest(string url, string requestData = null, int requestTimeout = 100000) {
