@@ -46,6 +46,7 @@ namespace Creatio.Client
 
 		string UploadFile(string url, string filePath, int requestTimeout = 100000);
 
+		void StartListening(CancellationToken cancellationToken);
 		#endregion
 
 	}
