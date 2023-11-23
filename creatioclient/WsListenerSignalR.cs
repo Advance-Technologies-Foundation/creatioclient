@@ -131,7 +131,7 @@ namespace Creatio.Client
 			string message = endWithUnreadableSymbol
 				? Encoding.UTF8.GetString(_buffer, 0, _currentPosition - 1)
 				: Encoding.UTF8.GetString(_buffer, 0, _currentPosition);
-			CoreWrapper msgObj = JsonConvert.DeserializeObject<CoreWrapper>(message);
+			SignalRWrapper msgObj = JsonConvert.DeserializeObject<SignalRWrapper>(message);
 			if (msgObj.Arguments != null && msgObj.Arguments.Any()) {
 				OnMessageReceived(msgObj.Arguments);
 			}

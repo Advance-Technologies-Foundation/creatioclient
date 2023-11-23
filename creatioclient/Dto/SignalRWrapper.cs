@@ -4,7 +4,7 @@ using Newtonsoft.Json;
 namespace Creatio.Client.Dto
 {
 	[JsonObject]
-	public class CoreWrapper
+	public class SignalRWrapper
 	{
 
 		#region Properties: Public
