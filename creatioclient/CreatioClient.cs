@@ -36,9 +36,9 @@ namespace Creatio.Client
 
 		void DownloadFile(string url, string filePath, string requestData, int requestTimeout = 100000);
 
-		string ExecuteGetRequest(string url, int requestTimeout = 100000);
+		string ExecuteGetRequest(string url, int requestTimeout = 100000, int retryCount = 1, int delaySec = 1);
 
-		string ExecutePostRequest(string url, string requestData, int requestTimeout = 100000);
+		string ExecutePostRequest(string url, string requestData, int requestTimeout = 100000, int retryCount = 1, int delaySec = 1);
 
 		void Login();
 
@@ -307,33 +307,53 @@ namespace Creatio.Client
 			request.SaveToFile(filePath);
 		}
 
-		public string ExecuteGetRequest(string url, int requestTimeout = 100000){
-			HttpWebRequest request = CreateCreatioRequest(url, null, requestTimeout);
-			request.Method = "GET";
-			return request.GetServiceResponse();
+		public string ExecuteGetRequest(string url, int requestTimeout = 100000, int retryCount = 1, int delaySec = 1) {
+			return Retry<string>(() => {
+				HttpWebRequest request = CreateCreatioRequest(url, null, requestTimeout);
+				request.Method = "GET";
+				return request.GetServiceResponse();
+			}, retryCount, delaySec);
 		}
 
-		public string ExecutePostRequest(string url, string requestData, int requestTimeout = 10000){
-			HttpClientHandler handler = CreateCreatioHandler();
-			if (_oauthToken != null) {
+		public string ExecutePostRequest(string url, string requestData, int requestTimeout = 10000, int retryCount = 1, int delaySec = 1){
+			return Retry<string>(() => {
+				HttpClientHandler handler = CreateCreatioHandler();
+				if (_oauthToken != null) {
+					using (HttpClient client = new HttpClient(handler)) {
+						client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _oauthToken);
+						StringContent stringContent = new StringContent(requestData, Encoding.UTF8, "application/json");
+						client.Timeout = new TimeSpan(0, 0, 0, 0, requestTimeout);
+						HttpResponseMessage response = client.PostAsync(url, stringContent).Result;
+						string content = response.Content.ReadAsStringAsync().Result;
+						return content;
+					}
+				}
+				handler.CookieContainer = AuthCookie;
 				using (HttpClient client = new HttpClient(handler)) {
-					client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _oauthToken);
+					AddCsrfToken(client);
 					StringContent stringContent = new StringContent(requestData, Encoding.UTF8, "application/json");
 					client.Timeout = new TimeSpan(0, 0, 0, 0, requestTimeout);
 					HttpResponseMessage response = client.PostAsync(url, stringContent).Result;
 					string content = response.Content.ReadAsStringAsync().Result;
 					return content;
 				}
+			}, retryCount, delaySec);
+		}
+
+		static T Retry<T>(Func<T> func, int maxRetries, int delaySeconds) {
+			int retries = 0;
+			while (retries < maxRetries) {
+				try {
+					return func();
+				} catch (Exception ex) {
+					retries++;
+					if (retries < maxRetries) {
+						Thread.Sleep(delaySeconds * 1000);
+					} else {
+						throw;					}
+				}
 			}
-			handler.CookieContainer = AuthCookie;
-			using (HttpClient client = new HttpClient(handler)) {
-				AddCsrfToken(client);
-				StringContent stringContent = new StringContent(requestData, Encoding.UTF8, "application/json");
-				client.Timeout = new TimeSpan(0, 0, 0, 0, requestTimeout);
-				HttpResponseMessage response = client.PostAsync(url, stringContent).Result;
-				string content = response.Content.ReadAsStringAsync().Result;
-				return content;
-			}
+			return default(T);
 		}
 
 		public void Login(){
