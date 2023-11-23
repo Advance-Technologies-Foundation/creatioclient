@@ -7,6 +7,13 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "creatioclient", "creatiocli
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "creatioclient.example", "creatioclient.example\creatioclient.example.csproj", "{1967A4E4-516E-4F40-81C5-B5F42FB9DEF9}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{3189A0BE-B1FB-43D6-B60B-4D65C80179C7}"
+	ProjectSection(SolutionItems) = preProject
+		README.md = README.md
+		.gitignore = .gitignore
+	EndProjectSection
+EndProject
+
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
