@@ -136,7 +136,7 @@ namespace Creatio.Client
 			Array.Clear(_buffer, 0, _buffer.Length);
 			_client?.Dispose();
 			_client = CreateClient(_creatioClient.AuthCookie, _appUrl);
-			_client.ConnectAsync(wsUri, _cancellationToken).ConfigureAwait(false).GetAwaiter().GetResult();
+			_client.ConnectAsync(wsUri, CancellationToken.None).ConfigureAwait(false).GetAwaiter().GetResult();
 			ConnectionState = _client.State;
 		}
 
@@ -155,7 +155,6 @@ namespace Creatio.Client
 		}
 
 		public void StartListening(){
-			InitConnection();
 			while (!_cancellationToken.IsCancellationRequested) {
 				try {
 					WebSocketReceiveResult result = _client.ReceiveAsync(
@@ -164,13 +163,15 @@ namespace Creatio.Client
 						.ConfigureAwait(false).GetAwaiter().GetResult();
 					HandleWebSocketReceiveResult(result);
 				} catch {
-					ConnectionState = _client.State;
+					ConnectionState = _client?.State ?? WebSocketState.None;
 					_currentPosition = 0;
 					Array.Clear(_buffer, 0, _buffer.Length);
 					Thread.Sleep(TimeSpan.FromSeconds(1));
 					InitConnection();
 				}
 			}
+			_client?.CloseAsync(WebSocketCloseStatus.NormalClosure, string.Empty, CancellationToken.None)
+				.ConfigureAwait(false).GetAwaiter().GetResult();
 		}
 
 		#endregion
