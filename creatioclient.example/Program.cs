@@ -39,7 +39,7 @@ public static class Program
 			};
 			System.IO.File.AppendAllText(logFile,JsonSerializer.Serialize(msgObject, opts), Encoding.UTF8);
 		};
-		client.StartListening(CancellationToken.None);
+		client.StartListening(CancellationToken.None, "All","", Console.WriteLine);
 		Console.ReadLine();
 	}
 

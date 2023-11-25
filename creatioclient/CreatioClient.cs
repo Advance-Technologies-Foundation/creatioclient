@@ -46,7 +46,8 @@ namespace Creatio.Client
 
 		string UploadFile(string url, string filePath, int requestTimeout = 100000);
 
-		void StartListening(CancellationToken cancellationToken);
+		void StartListening(CancellationToken cancellationToken,string logLevel, string logPattern, Action<string> logger);
+
 		#endregion
 
 	}
@@ -240,9 +241,9 @@ namespace Creatio.Client
 			_ = pingRequest.GetServiceResponse();
 		}
 
-		private void StartListeningSignalR(CancellationToken cancellationToken){
+		private void StartListeningSignalR(CancellationToken cancellationToken, string logLevel, string logPattern, Action<string> logger){
 			Thread thread = new Thread(() => {
-				IWsListener ws = new WsListenerSignalR(_appUrl, this, cancellationToken);
+				IWsListener ws = new WsListenerSignalR(_appUrl, this, cancellationToken, logLevel,logPattern, logger);
 				ws.MessageReceived += (sender, message) => { MessageReceived?.Invoke(sender, message); };
 				ws.ConnectionStateChanged += (sender, state) => { ConnectionStateChanged?.Invoke(sender, state); };
 				ws.StartListening();
@@ -251,9 +252,9 @@ namespace Creatio.Client
 			thread.Start();
 		}
 
-		private void StartListeningNetFrameworkApp(CancellationToken cancellationToken){
+		private void StartListeningNetFrameworkApp(CancellationToken cancellationToken, string logLevel, string logPattern, Action<string> logger){
 			Thread thread = new Thread(() => {
-				IWsListener ws = new WsListenerNetFramework(_appUrl, this, cancellationToken);
+				IWsListener ws = new WsListenerNetFramework(_appUrl, this, cancellationToken, logLevel,logPattern, logger);
 				ws.MessageReceived += (sender, message) => { MessageReceived?.Invoke(sender, message); };
 				ws.ConnectionStateChanged += (sender, state) => { ConnectionStateChanged?.Invoke(sender, state); };
 				ws.StartListening();
@@ -405,11 +406,11 @@ namespace Creatio.Client
 			}
 		}
 
-		public void StartListening(CancellationToken cancellationToken){
+		public void StartListening(CancellationToken cancellationToken, string logLevel, string logPattern, Action<string> logger ){
 			if (_isNetCore) {
-				StartListeningSignalR(cancellationToken);
+				StartListeningSignalR(cancellationToken, logLevel, logPattern, logger);
 			} else {
-				StartListeningNetFrameworkApp(cancellationToken);
+				StartListeningNetFrameworkApp(cancellationToken, logLevel, logPattern, logger);
 			}
 		}
 

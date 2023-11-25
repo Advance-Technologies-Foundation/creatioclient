@@ -13,6 +13,13 @@ namespace Creatio.Client
 	internal sealed class WsListenerSignalR : IWsListener
 	{
 
+		#region Constants: Private
+
+		private const string StartLogBroadcast = "/rest/ATFLogService/StartLogBroadcast";
+		private const string StopLogBroadcast = "/rest/ATFLogService/ResetConfiguration";
+
+		#endregion
+
 		#region Fields: Private
 
 		private static readonly Func<CookieContainer, string, ClientWebSocket> CreateClient = (cookies, appUrl) => {
@@ -29,7 +36,7 @@ namespace Creatio.Client
 		private static readonly Func<Uri, string, Uri> WsUri = (appUri, connectionToken) => {
 			UriBuilder wsUri = new UriBuilder(appUri) {
 				Scheme = appUri.Scheme == "https" ? "wss" : "ws",
-				Path = appUri.LocalPath =="/" ? "msg": appUri.LocalPath+"/msg",
+				Path = appUri.LocalPath == "/" ? "msg" : appUri.LocalPath + "/msg",
 				Query = $"id={connectionToken}"
 			};
 			return wsUri.Uri;
@@ -67,6 +74,9 @@ namespace Creatio.Client
 		private readonly string _appUrl;
 		private readonly CreatioClient _creatioClient;
 		private readonly CancellationToken _cancellationToken;
+		private readonly string _logLevel;
+		private readonly string _logPattern;
+		private readonly Action<string> _logger;
 		private ClientWebSocket _client;
 		private WebSocketState _connectionState;
 		private readonly byte[] _buffer = new byte[8192 * 1024];
@@ -82,10 +92,17 @@ namespace Creatio.Client
 		/// <param name="appUrl"></param>
 		/// <param name="creatioClient"></param>
 		/// <param name="cancellationToken"></param>
-		public WsListenerSignalR(string appUrl, CreatioClient creatioClient, CancellationToken cancellationToken){
+		/// <param name="logLevel"></param>
+		/// <param name="logPattern"></param>
+		/// <param name="logger"></param>
+		public WsListenerSignalR(string appUrl, CreatioClient creatioClient, CancellationToken cancellationToken,
+			string logLevel, string logPattern, Action<string> logger){
 			_appUrl = appUrl;
 			_creatioClient = creatioClient;
 			_cancellationToken = cancellationToken;
+			_logLevel = logLevel;
+			_logPattern = logPattern;
+			_logger = logger;
 		}
 
 		#endregion
@@ -127,13 +144,18 @@ namespace Creatio.Client
 		}
 
 		private void HandleTextMessage(){
-			bool endWithUnreadableSymbol = _buffer[_currentPosition - 1] == 30;
-			string message = endWithUnreadableSymbol
-				? Encoding.UTF8.GetString(_buffer, 0, _currentPosition - 1)
-				: Encoding.UTF8.GetString(_buffer, 0, _currentPosition);
-			SignalRWrapper msgObj = JsonConvert.DeserializeObject<SignalRWrapper>(message);
-			if (msgObj.Arguments != null && msgObj.Arguments.Any()) {
-				OnMessageReceived(msgObj.Arguments);
+			int currentPosition = 0;
+			int startPosition = 0;
+			while(currentPosition< _buffer.Length) {
+				if(_buffer[currentPosition] == 30) {
+					string msg = Encoding.UTF8.GetString(_buffer, startPosition, currentPosition-startPosition);
+					SignalRWrapper msgObj = JsonConvert.DeserializeObject<SignalRWrapper>(msg);
+					if (msgObj.Arguments != null && msgObj.Arguments.Any()) {
+						OnMessageReceived(msgObj.Arguments);
+					}	
+					startPosition = currentPosition+1;
+				}
+				currentPosition++;
 			}
 		}
 
@@ -159,6 +181,7 @@ namespace Creatio.Client
 
 		private void InitConnection(){
 			_creatioClient.Login();
+			StartLogger();
 			NegotiateResponse response = NegotiateWsConnection(_appUrl, _creatioClient);
 			Uri wsUri = WsUri(new Uri(_appUrl), response.ConnectionToken);
 			_currentPosition = 0;
@@ -174,11 +197,30 @@ namespace Creatio.Client
 			messages.ToList().ForEach(m => MessageReceived?.Invoke(this, m));
 		}
 
+		private void StartLogger(){
+			string requestUrl = _appUrl + StartLogBroadcast;
+			var payload = new {
+				logLevelStr = _logLevel ?? "All",
+				bufferSize = 1,
+				loggerPattern = _logPattern ?? ""
+			};
+			string payloadString = JsonConvert.SerializeObject(payload);
+			_creatioClient.ExecutePostRequest(requestUrl, payloadString, 10_000, 10, 3);
+			_logger("Logger Started");
+		}
+
+		private void StopLogger(){
+			string requestUrl = _appUrl + StopLogBroadcast;
+			_creatioClient.ExecutePostRequest(requestUrl, string.Empty);
+			_logger("Logger stopped");
+		}
+
 		#endregion
 
 		#region Methods: Public
 
 		public void Dispose(){
+			StopLogger();
 			Array.Clear(_buffer, 0, _buffer.Length);
 			_client?.Dispose();
 			ConnectionState = WebSocketState.None;
@@ -192,7 +234,8 @@ namespace Creatio.Client
 							_cancellationToken)
 						.ConfigureAwait(false).GetAwaiter().GetResult();
 					HandleWebSocketReceiveResult(result);
-				} catch {
+				} catch(Exception e) {
+					_logger(e.Message);
 					ConnectionState = _client?.State ?? WebSocketState.None;
 					_currentPosition = 0;
 					Array.Clear(_buffer, 0, _buffer.Length);
@@ -200,8 +243,12 @@ namespace Creatio.Client
 					InitConnection();
 				}
 			}
+			_logger("Stopping logger");
+			StopLogger();
+
 			_client?.CloseAsync(WebSocketCloseStatus.NormalClosure, string.Empty, CancellationToken.None)
 				.ConfigureAwait(false).GetAwaiter().GetResult();
+			_logger("Disconnected from WebSocket");
 		}
 
 		#endregion
