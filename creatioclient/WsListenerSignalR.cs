@@ -235,7 +235,6 @@ namespace Creatio.Client
 						.ConfigureAwait(false).GetAwaiter().GetResult();
 					HandleWebSocketReceiveResult(result);
 				} catch(Exception e) {
-					_logger(e.Message);
 					ConnectionState = _client?.State ?? WebSocketState.None;
 					_currentPosition = 0;
 					Array.Clear(_buffer, 0, _buffer.Length);

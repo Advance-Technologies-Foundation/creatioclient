@@ -255,7 +255,9 @@ namespace Creatio.Client
 		private void StartListeningNetFrameworkApp(CancellationToken cancellationToken, string logLevel, string logPattern, Action<string> logger){
 			Thread thread = new Thread(() => {
 				IWsListener ws = new WsListenerNetFramework(_appUrl, this, cancellationToken, logLevel,logPattern, logger);
-				ws.MessageReceived += (sender, message) => { MessageReceived?.Invoke(sender, message); };
+				ws.MessageReceived += (sender, message) => {
+					MessageReceived?.Invoke(sender, message);
+				};
 				ws.ConnectionStateChanged += (sender, state) => { ConnectionStateChanged?.Invoke(sender, state); };
 				ws.StartListening();
 				ws.Dispose();

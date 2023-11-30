@@ -116,14 +116,23 @@ namespace Creatio.Client
 		private void HandleTextMessage(){
 			int currentPosition = 0;
 			int startPosition = 0;
+			bool isSeparatorFound = false;
+			
 			while(currentPosition< _buffer.Length) {
 				if(_buffer[currentPosition] == 30) {
+					isSeparatorFound = true;
 					string msg = Encoding.UTF8.GetString(_buffer, startPosition, currentPosition-startPosition);
 					WsMessage msgObj = JsonConvert.DeserializeObject<WsMessage>(msg);
 					OnMessageReceived(new[] {msgObj});
 					startPosition = currentPosition+1;
 				}
 				currentPosition++;
+			}
+			
+			if(!isSeparatorFound) {
+				string msg = Encoding.UTF8.GetString(_buffer, startPosition, currentPosition-startPosition);
+				WsMessage msgObj = JsonConvert.DeserializeObject<WsMessage>(msg);
+				OnMessageReceived(new[] {msgObj});
 			}
 		}
 
