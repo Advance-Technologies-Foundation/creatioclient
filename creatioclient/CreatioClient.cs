@@ -413,11 +413,47 @@ namespace Creatio.Client
 			}
 		}
 
-		public string UploadAlmFile(string url, string filePath){
+		public string UploadAlmFileByChunk(string url, string filePath) {
 			FileInfo fileInfo = new FileInfo(filePath);
-			string fileName = fileInfo.Name;
+			Stream memStream = new MemoryStream();
+			string result = "";
+			using (FileStream fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read)) {
+				int chunkSize = 1024*1024;
+				byte[] buffer = new byte[chunkSize];
+				int bytesRead = 0;
+				var fileLenght = (int)fileInfo.Length;
+				var downloadedSize = 0;
+				while ((bytesRead = fileStream.Read(buffer, 0, buffer.Length)) != 0) {
+					byte[] readedBytes = new byte[bytesRead];
+					Array.Copy(buffer, readedBytes, bytesRead);
+					result = UploadChunkAlmFile(url, readedBytes, downloadedSize, fileLenght);
+					if (result.ToLower().Contains("\"success\": false")) {
+						Console.WriteLine($"Error: {result}");
+					};
+					downloadedSize += bytesRead ;
+					var leftByteSize = fileLenght - downloadedSize;
+					chunkSize = leftByteSize < chunkSize ? leftByteSize : chunkSize;
+					buffer = new byte[chunkSize];
+					Console.WriteLine($"Loaded {downloadedSize} from {fileLenght}");
+				}
+			}
+			return result;
+		}
+
+		public string UploadChunkAlmFile(string url, byte[] data, int downloadedSize, int totalSize) {
 			HttpWebRequest request = CreateCreatioRequest(url);
 			request.ContentType = "Content-Type: application/octet-stream";
+			request.ContentLength = data.Length;
+			int startByte = downloadedSize == 0 ? 0 : downloadedSize + 1;
+			request.Headers.Add("Content-Range", $"bytes {startByte}-{downloadedSize + data.Length}/{totalSize}");
+			using (Stream requestStream = request.GetRequestStream()) {
+				requestStream.Write(data, 0, data.Length);
+			}
+			return request.GetServiceResponse();
+		}
+
+		public string UploadAlmFile(string url, string filePath){
+			FileInfo fileInfo = new FileInfo(filePath);
 			Stream memStream = new MemoryStream();
 			using (FileStream fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read)) {
 				byte[] buffer = new byte[1024];
@@ -426,6 +462,9 @@ namespace Creatio.Client
 					memStream.Write(buffer, 0, bytesRead);
 				}
 			}
+			string fileName = fileInfo.Name;
+			HttpWebRequest request = CreateCreatioRequest(url);
+			request.ContentType = "Content-Type: application/octet-stream";
 			request.ContentLength = memStream.Length;
 			using (Stream requestStream = request.GetRequestStream()) {
 				memStream.Position = 0;
