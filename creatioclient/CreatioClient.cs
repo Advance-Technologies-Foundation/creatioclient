@@ -15,6 +15,19 @@ using Newtonsoft.Json;
 namespace Creatio.Client
 {
 
+	#region Enum: RetryPolicy
+
+	/// <summary>
+	/// Define incrementation of delay between different retries: 
+	/// <see cref="Simple"/> - no increment
+	/// <see cref="Progressive"/> - multiply delay by the value of the current attempt of retry 
+	/// </summary>
+	public enum RetryPolicy {
+		Simple,
+		Progressive
+	}
+
+	#endregion
 
 	#region Interface: ICreatioClient
 
@@ -47,6 +60,15 @@ namespace Creatio.Client
 		string UploadFile(string url, string filePath, int requestTimeout = 100000);
 
 		void StartListening(CancellationToken cancellationToken);
+
+		/// <summary>
+		/// Set custom retry policy to Http cals (by default is 1 time 1 second without progression Retry
+		/// </summary>
+		/// <param name="retryCount">Counts of retries</param>
+		/// <param name="delaySec">Default delay before next Retry</param>
+		/// <param name="retryPolicy"><see cref="RetryPolicy"/></param>
+		void SetRetryPolicy(int retryCount, int delaySec, RetryPolicy retryPolicy);
+
 		#endregion
 
 	}
@@ -73,6 +95,9 @@ namespace Creatio.Client
 		private readonly bool _useUntrustedSsl = true;
 		private CookieContainer _authCookie;
 		private string _oauthToken;
+		private int _retryCount = 1;
+		private int _delaySec = 1;
+		private RetryPolicy _retryPolicy = RetryPolicy.Simple;
 
 		#endregion
 
@@ -190,14 +215,14 @@ namespace Creatio.Client
 			HttpClientHandler handler = new HttpClientHandler();
 			handler.ClientCertificateOptions = ClientCertificateOption.Manual;
 			handler.ServerCertificateCustomValidationCallback
-				= (httpRequestMessage, cert, certChail, sslPolicyErrors) => { return true; };
+				= (httpRequestMessage, cert, certChail, sslPolicyErrors) => true;
 			return handler;
 		}
 
 		private HttpWebRequest CreateCreatioRequest(string url, string requestData = null, int requestTimeout = 100000){
 			HttpWebRequest request = CreateRequest(url);
 			if (_useUntrustedSsl) {
-				request.ServerCertificateValidationCallback = (message, cert, chain, errors) => { return true; };
+				request.ServerCertificateValidationCallback = (message, cert, chain, errors) => true;
 			}
 			request.Timeout = requestTimeout;
 			if (!string.IsNullOrEmpty(_oauthToken)) {
@@ -213,7 +238,7 @@ namespace Creatio.Client
 		private HttpWebRequest CreateRequest(string url){
 			HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
 			if (_useUntrustedSsl) {
-				request.ServerCertificateValidationCallback = (message, cert, chain, errors) => { return true; };
+				request.ServerCertificateValidationCallback = (message, cert, chain, errors) => true;
 			}
 			request.ContentType = "application/json; charset=utf-8";
 			request.Method = "POST";
@@ -289,8 +314,9 @@ namespace Creatio.Client
 		public static CreatioClient CreateOAuth20Client(string app, string authApp, string clientId,
 			string clientSecret,
 			bool isNetCore = false){
-			CreatioClient client = new CreatioClient(app, isNetCore);
-			client._oauthToken = GetAccessTokenByClientCredentials(authApp, clientId, clientSecret).Result;
+			CreatioClient client = new CreatioClient(app, isNetCore) {
+				_oauthToken = GetAccessTokenByClientCredentials(authApp, clientId, clientSecret).Result
+			};
 			return client;
 		}
 
@@ -299,7 +325,7 @@ namespace Creatio.Client
 			string requestData,
 			int requestTimeout = 100000){
 			string executeUrl = CreateConfigurationServiceUrl(serviceName, serviceMethod);
-			return ExecutePostRequest(executeUrl, requestData, requestTimeout);
+			return ExecutePostRequest(executeUrl, requestData, requestTimeout, _retryCount, _delaySec);
 		}
 
 		public void DownloadFile(string url, string filePath, string requestData, int requestTimeout = 100000){
@@ -312,7 +338,7 @@ namespace Creatio.Client
 				HttpWebRequest request = CreateCreatioRequest(url, null, requestTimeout);
 				request.Method = "GET";
 				return request.GetServiceResponse();
-			}, retryCount, delaySec);
+			}, retryCount, delaySec, _retryPolicy);
 		}
 
 		public string ExecutePostRequest(string url, string requestData, int requestTimeout = 10000, int retryCount = 1, int delaySec = 1){
@@ -322,7 +348,7 @@ namespace Creatio.Client
 					using (HttpClient client = new HttpClient(handler)) {
 						client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _oauthToken);
 						StringContent stringContent = new StringContent(requestData, Encoding.UTF8, "application/json");
-						client.Timeout = new TimeSpan(0, 0, 0, 0, requestTimeout);
+						client.Timeout = TimeSpan.FromMilliseconds(requestTimeout);
 						HttpResponseMessage response = client.PostAsync(url, stringContent).Result;
 						string content = response.Content.ReadAsStringAsync().Result;
 						return content;
@@ -332,23 +358,27 @@ namespace Creatio.Client
 				using (HttpClient client = new HttpClient(handler)) {
 					AddCsrfToken(client);
 					StringContent stringContent = new StringContent(requestData, Encoding.UTF8, "application/json");
-					client.Timeout = new TimeSpan(0, 0, 0, 0, requestTimeout);
+					client.Timeout = TimeSpan.FromMilliseconds(requestTimeout); 
 					HttpResponseMessage response = client.PostAsync(url, stringContent).Result;
 					string content = response.Content.ReadAsStringAsync().Result;
 					return content;
 				}
-			}, retryCount, delaySec);
+			}, retryCount, delaySec, _retryPolicy);
 		}
 
-		static T Retry<T>(Func<T> func, int maxRetries, int delaySeconds) {
+		static T Retry<T>(Func<T> func, int maxRetries, int delaySeconds, RetryPolicy retryPolicy = RetryPolicy.Simple) {
 			int retries = 0;
+			int multiplicator = 1; 
 			while (retries < maxRetries) {
 				try {
 					return func();
 				} catch (Exception ex) {
 					retries++;
+					if (retryPolicy == RetryPolicy.Progressive) {
+						multiplicator++;
+					} 
 					if (retries < maxRetries) {
-						Thread.Sleep(delaySeconds * 1000);
+						Thread.Sleep(delaySeconds * 1000 * multiplicator);
 					} else {
 						throw;					}
 				}
@@ -511,6 +541,12 @@ namespace Creatio.Client
 			return request.GetServiceResponse();
 		}
 
+		/// <inheritdoc/>
+		public void SetRetryPolicy(int retryCount, int delaySec, RetryPolicy retryPolicy) {
+			_retryCount = retryCount;
+			_delaySec = delaySec;
+			_retryPolicy = retryPolicy;
+		}
 		#endregion
 
 	}
