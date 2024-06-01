@@ -29,51 +29,6 @@ namespace Creatio.Client
 
 	#endregion
 
-	#region Interface: ICreatioClient
-
-	public interface ICreatioClient
-	{
-
-		#region Events: Public
-
-		event EventHandler<WsMessage> MessageReceived;
-
-		event EventHandler<WebSocketState> ConnectionStateChanged;
-
-		#endregion
-
-		#region Methods: Public
-
-		string CallConfigurationService(string serviceName, string serviceMethod, string requestData,
-			int requestTimeout = 100000);
-
-		void DownloadFile(string url, string filePath, string requestData, int requestTimeout = 100000);
-
-		string ExecuteGetRequest(string url, int requestTimeout = 100000, int retryCount = 1, int delaySec = 1);
-
-		string ExecutePostRequest(string url, string requestData, int requestTimeout = 100000, int retryCount = 1, int delaySec = 1);
-
-		void Login();
-
-		string UploadAlmFile(string url, string filePath);
-
-		string UploadFile(string url, string filePath, int requestTimeout = 100000);
-
-		void StartListening(CancellationToken cancellationToken);
-
-		/// <summary>
-		/// Set custom retry policy to Http cals (by default is 1 time 1 second without progression Retry
-		/// </summary>
-		/// <param name="retryCount">Counts of retries</param>
-		/// <param name="delaySec">Default delay before next Retry</param>
-		/// <param name="retryPolicy"><see cref="RetryPolicy"/></param>
-		void SetRetryPolicy(int retryCount, int delaySec, RetryPolicy retryPolicy);
-
-		#endregion
-
-	}
-
-	#endregion
 
 	#region Class: CreatioClient
 
@@ -98,6 +53,7 @@ namespace Creatio.Client
 		private int _retryCount = 1;
 		private int _delaySec = 1;
 		private RetryPolicy _retryPolicy = RetryPolicy.Simple;
+		private readonly ICredentials _credentials;
 
 		#endregion
 
@@ -112,6 +68,13 @@ namespace Creatio.Client
 
 		#region Constructors: Public
 
+		/// <summary>
+		/// Initializes a new instance of the <see cref="CreatioClient"/> class.
+		/// </summary>
+		/// <param name="appUrl">The URL of the Creatio application.</param>
+		/// <param name="userName">The username to use for authentication.</param>
+		/// <param name="userPassword">The password to use for authentication.</param>
+		/// <param name="isNetCore">Optional. A boolean value indicating whether the client is running on .NET Core. Default is false.</param>
 		public CreatioClient(string appUrl, string userName, string userPassword, bool isNetCore = false){
 			_appUrl = appUrl;
 			_userName = userName;
@@ -119,6 +82,14 @@ namespace Creatio.Client
 			_isNetCore = isNetCore;
 		}
 
+		/// <summary>
+		/// Initializes a new instance of the <see cref="CreatioClient"/> class.
+		/// </summary>
+		/// <param name="appUrl">The URL of the Creatio application.</param>
+		/// <param name="userName">The username to use for authentication.</param>
+		/// <param name="userPassword">The password to use for authentication.</param>
+		/// <param name="useUntrustedSsl">A boolean value indicating whether to use untrusted SSL.</param>
+		/// <param name="isNetCore">Optional. A boolean value indicating whether the client is running on .NET Core. Default is false.</param>
 		public CreatioClient(string appUrl, string userName, string userPassword, bool useUntrustedSsl,
 			bool isNetCore = false){
 			_appUrl = appUrl;
@@ -127,7 +98,27 @@ namespace Creatio.Client
 			_useUntrustedSsl = useUntrustedSsl;
 			_isNetCore = isNetCore;
 		}
-
+		
+		/// <summary>
+		/// Initializes a new instance of the <see cref="CreatioClient"/> class with NTLM authentication.
+		/// </summary>
+		/// <param name="appUrl">The URL of the Creatio application.</param>
+		/// <param name="useUntrustedSsl">A boolean value indicating whether to use untrusted SSL.</param>
+		/// <param name="credentials">The credentials to use for NTLM authentication.</param>
+		/// <param name="isNetCore">Optional. A boolean value indicating whether the client is running on .NET Core. Default is false.</param>
+		/// <example>
+		/// <code>
+		/// string appUrl = "https://someName.creatio.com";
+		/// CreatioClient client = new(appUrl, true, CredentialCache.DefaultNetworkCredentials);
+		/// </code>
+		/// </example>
+		public CreatioClient(string appUrl, bool useUntrustedSsl, ICredentials credentials, bool isNetCore = false){
+			_credentials = credentials;
+			_appUrl = appUrl;
+			_isNetCore = isNetCore;
+			_useUntrustedSsl = useUntrustedSsl;
+		}
+		
 		#endregion
 
 		#region Properties: Private
@@ -211,11 +202,20 @@ namespace Creatio.Client
 			return $"{_appUrl}/{WorkspaceId}/rest/{serviceName}/{methodName}";
 		}
 
-		private HttpClientHandler CreateCreatioHandler(){
+		private HttpClientHandler CreateCreatioHandler(ICredentials credentials = null, CookieContainer cookieContainer = null){
 			HttpClientHandler handler = new HttpClientHandler();
 			handler.ClientCertificateOptions = ClientCertificateOption.Manual;
 			handler.ServerCertificateCustomValidationCallback
 				= (httpRequestMessage, cert, certChail, sslPolicyErrors) => true;
+			
+			if(credentials != null) {
+				handler.Credentials = credentials;
+			}
+			
+			if(cookieContainer != null) {
+				handler.CookieContainer = cookieContainer;
+			}
+			
 			return handler;
 		}
 
@@ -256,6 +256,35 @@ namespace Creatio.Client
 				}
 			}
 		}
+		
+		/// <summary>
+		/// Uses NTLM authentication to login to Creatio
+		/// </summary>
+		private async Task NtlmLogin(int requestTimeout = 100000){
+			CookieContainer cookieContainer = new CookieContainer();
+			const string loginUrl = "/Login/NuiLogin.aspx?ntlmlogin";
+			Uri loginUri = new Uri(_appUrl + loginUrl);
+			
+			using(HttpClientHandler handler = CreateCreatioHandler(_credentials, cookieContainer)) {
+				using(HttpClient client = new HttpClient(handler)) {
+					client.Timeout = TimeSpan.FromMilliseconds(requestTimeout);
+					HttpResponseMessage response = await client.GetAsync(loginUri);
+					if((int)response.StatusCode> 302) {
+						Console.WriteLine("Login Error");
+						string errorMsg = await response.Content.ReadAsStringAsync();
+						Console.WriteLine(errorMsg);
+					}
+				}
+			}
+			CookieCollection cookies = cookieContainer.GetCookies(loginUri);
+			const string csrfCookieName = "BPMCSRF";
+			foreach (Cookie cookie in cookies) {
+				if(cookie.Name == csrfCookieName && !string.IsNullOrEmpty((cookie.Value))) {
+					_authCookie = cookieContainer;
+				}
+			}
+		}
+		
 
 		private void PingApp(int pingTimeout){
 			if (_isNetCore) {
@@ -343,25 +372,27 @@ namespace Creatio.Client
 
 		public string ExecutePostRequest(string url, string requestData, int requestTimeout = 10000, int retryCount = 1, int delaySec = 1){
 			return Retry<string>(() => {
-				HttpClientHandler handler = CreateCreatioHandler();
-				if (_oauthToken != null) {
+				//HttpClientHandler handler = CreateCreatioHandler();
+				using( var handler = CreateCreatioHandler()) {
+					if (_oauthToken != null) {
+						using (HttpClient client = new HttpClient(handler)) {
+							client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _oauthToken);
+							StringContent stringContent = new StringContent(requestData, Encoding.UTF8, "application/json");
+							client.Timeout = TimeSpan.FromMilliseconds(requestTimeout);
+							HttpResponseMessage response = client.PostAsync(url, stringContent).Result;
+							string content = response.Content.ReadAsStringAsync().Result;
+							return content;
+						}
+					}
+					handler.CookieContainer = AuthCookie;
 					using (HttpClient client = new HttpClient(handler)) {
-						client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _oauthToken);
+						AddCsrfToken(client);
 						StringContent stringContent = new StringContent(requestData, Encoding.UTF8, "application/json");
-						client.Timeout = TimeSpan.FromMilliseconds(requestTimeout);
+						client.Timeout = TimeSpan.FromMilliseconds(requestTimeout); 
 						HttpResponseMessage response = client.PostAsync(url, stringContent).Result;
 						string content = response.Content.ReadAsStringAsync().Result;
 						return content;
 					}
-				}
-				handler.CookieContainer = AuthCookie;
-				using (HttpClient client = new HttpClient(handler)) {
-					AddCsrfToken(client);
-					StringContent stringContent = new StringContent(requestData, Encoding.UTF8, "application/json");
-					client.Timeout = TimeSpan.FromMilliseconds(requestTimeout); 
-					HttpResponseMessage response = client.PostAsync(url, stringContent).Result;
-					string content = response.Content.ReadAsStringAsync().Result;
-					return content;
 				}
 			}, retryCount, delaySec, _retryPolicy);
 		}
@@ -387,6 +418,11 @@ namespace Creatio.Client
 		}
 
 		public void Login(){
+			if(_credentials != null) {
+				NtlmLogin().GetAwaiter().GetResult();
+				return;
+			}
+
 			string authData = @"{
 				""UserName"":""" + _userName + @""",
 				""UserPassword"":""" + _userPassword + @"""
@@ -411,6 +447,12 @@ namespace Creatio.Client
 		}
 
 		public void Login(int requestTimeout){
+			
+			if(_credentials != null) {
+				NtlmLogin().GetAwaiter().GetResult();
+				return;
+			}
+			
 			string authData = @"{
 				""UserName"":""" + _userName + @""",
 				""UserPassword"":""" + _userPassword + @"""

@@ -12,17 +12,16 @@ public static class Program
 
 	#region Methods: Private
 
-	private static void Main(string[] args){
+	
+	private const string AppUrl = "http://kkrylovn.tscrm.com:40016";
+	
+	private static void Main(){
 		
 		const string username = "Supervisor";
 		const string password = "Supervisor";
 		const string logFile = "C:\\ws.json";
 		
-		// const string app = "http://ts1-mrkt-web01.tscrm.com:91/zoominfo_staging";
-		// CreatioClient client = new(app, username, password, true, false);
-		
-		const string app = "http://kkrylovn.tscrm.com:40016";
-		CreatioClient client = new(app, username, password, true, true);
+		CreatioClient client = new(AppUrl, username, password, true, true);
 		
 		client.ConnectionStateChanged += (sender, state) => {
 			Console.WriteLine($"Connection state changed to: {state}");
@@ -41,6 +40,13 @@ public static class Program
 		};
 		client.StartListening(CancellationToken.None);
 		Console.ReadLine();
+	}
+	
+	private static void Example2(){
+		CreatioClient client = new(AppUrl, true, CredentialCache.DefaultNetworkCredentials);
+		const string url = AppUrl+ "/0/ServiceModel/UserInfoService.svc/getCurrentUserInfo";
+		string result = client.ExecutePostRequest(url, string.Empty, 100000);
+		Console.WriteLine(result);
 	}
 
 	#endregion

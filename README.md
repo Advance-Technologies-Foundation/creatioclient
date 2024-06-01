@@ -1,17 +1,46 @@
-# creatio.client
-Easy connector .net standard connector for creatio
+# Introduction
+Creatio Client is a user-friendly connector for Creatio, implemented using **.NET Standard 2.0**
+It provides convenient methods for calling various Creatio services and subscribing to WebSocket messages.
 
-For call creatio configuration service from you application just write code:
+## Installation
+Use [NuGet](https://www.nuget.org/packages/creatio.client) to install Creatio Client
+```
+dotnet add package creatio.client
+```
+
+## Initialization
+
+You can initialize CreatioClient in three(3) different ways
+
+- Use [Cookie-based authentication](https://academy.creatio.com/docs/8.x/dev/development-on-creatio-platform/integrations-and-api/authentication/authentication-basics/overview-authentication)
+    ```csharp
+    var client = new CreatioClient(<AppUrl>, <UserName>, <UserPassword>);
+    ```
+
+- Use [OAuth 2.0](https://academy.creatio.com/docs/8.x/dev/development-on-creatio-platform/integrations-and-api/authentication/oauth-2-0-authorization/identity-service-overview)
+    ```csharp
+   var client = new CreatioClient(<AppUrl>, <ClientId>, <ClientSecret>, <UserName>, <UserPassword>);
+    ```
+
+- Use [NTLM user authentication](https://learn.microsoft.com/en-us/troubleshoot/windows-server/windows-security/ntlm-user-authentication)
+    ```csharp
+    string appUrl = "https://someName. creatio. com";
+    CreatioClient client = new(appUrl, true, CredentialCache. DefaultNetworkCredentials);
+    ```
+
+## Usage
+To call creatio configuration service from your application, use this example:
 ```
 var client = new CreatioClient(<AppUrl>, <UserName>, <UserPassword>);
 string request = client.CallConfigurationService(<ServiceName>, <MethodName>, <RequestData>);
 ```
 
-For call any creatio enpoint you can Get request:
+To execute GET request:
 ```
 string data = client.ExecuteGetRequest(<Url>);
 ```
-or POST:
+
+To execute POST request:
 ```
 string data = client.ExecutePostRequest(<Url>, <RequestData>);
 ```

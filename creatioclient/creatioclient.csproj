@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
-    <Description>.net client for call creatio api in simple way (.net standart campatible)</Description>
+    <Description>.net client to call creatio api in simple way (.net standart campatible)</Description>
     <Authors>a.technologies.foundation@gmail.com</Authors>
     <Company>ATF</Company>
     <PackageId>creatio.client</PackageId>
@@ -10,14 +10,14 @@
     <AssemblyName>Creatio.Client</AssemblyName>
     <RootNamespace>Creatio.Client</RootNamespace>
     <RepositoryUrl>https://github.com/Advance-Technologies-Foundation/creatioclient</RepositoryUrl>
-    <AssemblyVersion>1.0.23</AssemblyVersion>
+    <AssemblyVersion>1.0.24</AssemblyVersion>
     <FileVersion>$(AssemblyVersion)</FileVersion>
     <Version>$(AssemblyVersion)</Version>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Newtonsoft.Json" Version="12.0.3" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
   </ItemGroup>
 
 </Project>
