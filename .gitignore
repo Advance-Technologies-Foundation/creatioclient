@@ -75,6 +75,9 @@ bld/
 # Visual Studo Code assets directory
 .vscode/
 
+# Rider assets directory
+.idea/
+
 # MSTest test Results
 [Tt]est[Rr]esult*/
 [Bb]uild[Ll]og.*
@@ -196,5 +199,3 @@ FakesAssemblies/
 
 # Node.js Tools for Visual Studio
 .ntvs_analysis.dat
-
-**/.idea
