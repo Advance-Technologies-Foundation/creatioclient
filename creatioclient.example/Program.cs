@@ -13,7 +13,7 @@ public static class Program
 	#region Methods: Private
 
 	
-	private const string AppUrl = "http://kkrylovn.tscrm.com:40016";
+	private const string AppUrl = "http://some-site.creatio.com";
 	
 	private static void Main(){
 		

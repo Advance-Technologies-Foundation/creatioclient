@@ -12,7 +12,7 @@ dotnet add package creatio.client
 
 You can initialize CreatioClient in three(3) different ways
 
-- Use [Cookie-based authentication](https://academy.creatio.com/docs/8.x/dev/development-on-creatio-platform/integrations-and-api/authentication/authentication-basics/overview-authentication)
+- Use [Cookie-based authentication](https://academy.creatio.com/docs/8.x/dev/development-on-creatio-platform/integrations-and-api/authentication/authentication-basics/overview)
     ```csharp
     var client = new CreatioClient(<AppUrl>, <UserName>, <UserPassword>);
     ```
