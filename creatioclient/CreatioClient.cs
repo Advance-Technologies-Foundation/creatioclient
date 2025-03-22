@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -14,21 +15,6 @@ using Newtonsoft.Json;
 
 namespace Creatio.Client
 {
-
-	#region Enum: RetryPolicy
-
-	/// <summary>
-	/// Define incrementation of delay between different retries: 
-	/// <see cref="Simple"/> - no increment
-	/// <see cref="Progressive"/> - multiply delay by the value of the current attempt of retry 
-	/// </summary>
-	public enum RetryPolicy {
-		Simple,
-		Progressive
-	}
-
-	#endregion
-
 
 	#region Class: CreatioClient
 
@@ -90,8 +76,7 @@ namespace Creatio.Client
 		/// <param name="userPassword">The password to use for authentication.</param>
 		/// <param name="useUntrustedSsl">A boolean value indicating whether to use untrusted SSL.</param>
 		/// <param name="isNetCore">Optional. A boolean value indicating whether the client is running on .NET Core. Default is false.</param>
-		public CreatioClient(string appUrl, string userName, string userPassword, bool useUntrustedSsl,
-			bool isNetCore = false){
+		public CreatioClient(string appUrl, string userName, string userPassword, bool useUntrustedSsl, bool isNetCore = false){
 			_appUrl = appUrl;
 			_userName = userName;
 			_userPassword = userPassword;
@@ -215,7 +200,6 @@ namespace Creatio.Client
 			if(cookieContainer != null) {
 				handler.CookieContainer = cookieContainer;
 			}
-			
 			return handler;
 		}
 
@@ -548,9 +532,109 @@ namespace Creatio.Client
 			return request.GetServiceResponse();
 		}
 
-		public string UploadFile(string url, string filePath, int defaultTimeout = 100000){
+		private string GetMimeTypeFromFileExtension(string fileExtension){
+			string mimeType = string.Empty;
+			switch (fileExtension.ToLower(CultureInfo.InvariantCulture)) {
+				case ".zip":
+					mimeType = "application/x-zip-compressed";
+					break;
+				case ".gz":
+					mimeType = "application/gzip";
+					break;
+				case ".json":
+					mimeType = "application/json";
+					break;
+				case ".xml":
+					mimeType = "application/xml";
+					break;
+				case ".jpg":
+				case ".jpeg":
+					mimeType = "image/jpeg";
+					break;
+				case ".png":
+					mimeType = "image/png";
+					break;
+				case ".gif":
+					mimeType = "image/gif";
+					break;
+				case ".bmp":
+					mimeType = "image/bmp";
+					break;
+				case ".tiff":
+				case ".tif":
+					mimeType = "image/tiff";
+					break;
+				case ".webp":
+					mimeType = "image/webp";
+					break;
+				case ".svg":
+					mimeType = "image/svg+xml";
+					break;
+				case ".dll":
+					mimeType = "application/x-msdownload";
+					break;
+				default:
+					return "application/octet-stream";
+			}
+			return mimeType;
+		}
+		
+		public string UploadFile(string url, string filePath, int defaultTimeout = 100_000, int chunkSize = 1 * 1024 * 1024){
+			return UploadFileAsync(url, filePath, defaultTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
+		}
+		
+		public async Task<string> UploadFileAsync(string url, string filePath, int defaultTimeout = 100_000, int chunkSize = 1 * 1024 * 1024){
+			
+			long totalBytesRead = 0;
+			HttpClient client = new HttpClient(CreateCreatioHandler(cookieContainer: AuthCookie));
 			FileInfo fileInfo = new FileInfo(filePath);
 			string fileName = fileInfo.Name;
+			string mime = GetMimeTypeFromFileExtension(fileInfo.Extension);
+			
+			string returnResult = string.Empty;
+			using (FileStream fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read)) {
+				while(fileStream.Length > totalBytesRead) {
+					string url2 = url + "?totalFileLength=" + fileStream.Length +
+						"&fileName=" + fileName + $"&mimeType={Uri.EscapeDataString(mime)}";
+					Uri.TryCreate(url2, UriKind.Absolute, out Uri uri);
+					
+					if(fileStream.Length - totalBytesRead < chunkSize) {
+						chunkSize = (int)(fileStream.Length - totalBytesRead);
+					}
+					byte[] buffer = new byte[chunkSize];
+					var bytesRead = await fileStream.ReadAsync(buffer, 0, chunkSize);
+					var msg = new HttpRequestMessage();
+					msg.Method = HttpMethod.Post;
+					msg.Headers.Add("BPMCSRF", AuthCookie.GetCookies(new Uri(_appUrl))["BPMCSRF"]?.Value);
+					msg.Content = new ByteArrayContent(buffer);
+					msg.Content.Headers.ContentType = new MediaTypeHeaderValue(mime);
+					msg.Content.Headers.ContentRange = new ContentRangeHeaderValue(totalBytesRead, totalBytesRead+chunkSize -1, fileStream.Length);
+					msg.Content.Headers.ContentDisposition = new ContentDispositionHeaderValue("attachment") {
+						FileName = fileName,
+					};
+					msg.RequestUri = uri;
+					totalBytesRead += bytesRead;
+					
+					HttpResponseMessage response  = await client.SendAsync(msg);
+					string resultString = await response.Content.ReadAsStringAsync();
+					returnResult = resultString;
+					FileUploadResponseDto dto = JsonConvert.DeserializeObject<FileUploadResponseDto>(resultString);
+					response.EnsureSuccessStatusCode();
+					int precentageUploaded = (int)((totalBytesRead * 100) / fileStream.Length);
+					if (response.StatusCode == HttpStatusCode.OK && dto.Success) {
+						Console.WriteLine($"Chunk upload OK [{precentageUploaded} %]: {totalBytesRead} of {fileStream.Length}");
+					} else {
+						Console.WriteLine($"Error: {dto.ErrorInfo?.ErrorCode} {dto.ErrorInfo?.Message}");
+					}
+				}
+			}
+			return returnResult;
+		}
+		
+		public string UploadFile_original(string url, string filePath, int defaultTimeout = 100000){
+			FileInfo fileInfo = new FileInfo(filePath);
+			string fileName = fileInfo.Name;
+			
 			string boundary = DateTime.Now.Ticks.ToString("x");
 			HttpWebRequest request = CreateCreatioRequest(url);
 			request.ContentType = "multipart/form-data; boundary=" + boundary;

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Net.WebSockets;
 using System.Threading;
+using System.Threading.Tasks;
 using Creatio.Client.Dto;
 
 namespace Creatio.Client
@@ -27,7 +28,7 @@ namespace Creatio.Client
 		/// <param name="requestTimeout">Optional. The timeout for the request in milliseconds. Default is 100000.</param>
 		/// <returns>The response from the service as a string.</returns>
 		string CallConfigurationService(string serviceName, string serviceMethod, string requestData,
-			int requestTimeout = 100000);
+			int requestTimeout = 100_000);
 
 		/// <summary>
 		/// Downloads a file from the specified URL and saves it to the provided file path.
@@ -36,7 +37,7 @@ namespace Creatio.Client
 		/// <param name="filePath">The path where the downloaded file should be saved.</param>
 		/// <param name="requestData">The data to send with the request.</param>
 		/// <param name="requestTimeout">Optional. The timeout for the request in milliseconds. Default is 100000.</param>
-		void DownloadFile(string url, string filePath, string requestData, int requestTimeout = 100000);
+		void DownloadFile(string url, string filePath, string requestData, int requestTimeout = 100_000);
 
 		/// <summary>
 		/// Executes a GET request to the specified URL.
@@ -46,7 +47,7 @@ namespace Creatio.Client
 		/// <param name="retryCount">Optional. The number of times to retry the request in case of failure. Default is 1.</param>
 		/// <param name="delaySec">Optional. The delay in seconds before retrying the request. Default is 1.</param>
 		/// <returns>The response from the GET request as a string.</returns>
-		string ExecuteGetRequest(string url, int requestTimeout = 100000, int retryCount = 1, int delaySec = 1);
+		string ExecuteGetRequest(string url, int requestTimeout = 100_000, int retryCount = 1, int delaySec = 1);
 
 		
 		/// <summary>
@@ -58,7 +59,7 @@ namespace Creatio.Client
 		/// <param name="retryCount">Optional. The number of times to retry the request in case of failure. Default is 1.</param>
 		/// <param name="delaySec">Optional. The delay in seconds before retrying the request. Default is 1.</param>
 		/// <returns>The response from the POST request as a string.</returns>
-		string ExecutePostRequest(string url, string requestData, int requestTimeout = 100000, int retryCount = 1, int delaySec = 1);
+		string ExecutePostRequest(string url, string requestData, int requestTimeout = 100_000, int retryCount = 1, int delaySec = 1);
 
 		/// <summary>
 		/// Logs in to the Creatio application.
@@ -79,8 +80,12 @@ namespace Creatio.Client
 		/// <param name="url">The URL to upload the file to.</param>
 		/// <param name="filePath">The path of the file to be uploaded.</param>
 		/// <param name="requestTimeout">Optional. The timeout for the request in milliseconds. Default is 100000.</param>
+		/// <param name="chunkSize">Upload chunk size (Default 1Mb)</param>
 		/// <returns>The response from the server as a string.</returns>
-		string UploadFile(string url, string filePath, int requestTimeout = 100000);
+		string UploadFile(string url, string filePath, int requestTimeout = 100_000, int chunkSize = 1 * 1024 * 1024);
+		
+		/// <inheritdoc cref="UploadFile"/>
+		Task<string> UploadFileAsync(string url, string filePath, int defaultTimeout = 100_000, int chunkSize = 1 * 1024 * 1024);
 
 		/// <summary>
 		/// Starts listening for incoming messages from the Creatio application.
