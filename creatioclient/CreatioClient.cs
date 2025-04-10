@@ -108,9 +108,9 @@ namespace Creatio.Client
 
 		#region Properties: Private
 
-		private string LoginUrl => _appUrl + @"/ServiceModel/AuthService.svc/Login";
+		private string LoginUrl => _appUrl.TrimEnd('/') + @"/ServiceModel/AuthService.svc/Login";
 
-		private string PingUrl => _appUrl + @"/0/ping";
+		private string PingUrl => _appUrl.TrimEnd('/') + @"/0/ping";
 
 		#endregion
 
@@ -605,7 +605,13 @@ namespace Creatio.Client
 					var bytesRead = await fileStream.ReadAsync(buffer, 0, chunkSize);
 					var msg = new HttpRequestMessage();
 					msg.Method = HttpMethod.Post;
-					msg.Headers.Add("BPMCSRF", AuthCookie.GetCookies(new Uri(_appUrl))["BPMCSRF"]?.Value);
+					
+					if(!string.IsNullOrEmpty(_oauthToken)) {
+						msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _oauthToken);
+						
+					}else {
+						msg.Headers.Add("BPMCSRF", AuthCookie.GetCookies(new Uri(_appUrl))["BPMCSRF"]?.Value);
+					}
 					msg.Content = new ByteArrayContent(buffer);
 					msg.Content.Headers.ContentType = new MediaTypeHeaderValue(mime);
 					msg.Content.Headers.ContentRange = new ContentRangeHeaderValue(totalBytesRead, totalBytesRead+chunkSize -1, fileStream.Length);
@@ -619,13 +625,13 @@ namespace Creatio.Client
 					string resultString = await response.Content.ReadAsStringAsync();
 					returnResult = resultString;
 					FileUploadResponseDto dto = JsonConvert.DeserializeObject<FileUploadResponseDto>(resultString);
-					response.EnsureSuccessStatusCode();
-					int precentageUploaded = (int)((totalBytesRead * 100) / fileStream.Length);
 					if (response.StatusCode == HttpStatusCode.OK && dto.Success) {
+						int precentageUploaded = (int)((totalBytesRead * 100) / fileStream.Length);
 						Console.WriteLine($"Chunk upload OK [{precentageUploaded} %]: {totalBytesRead} of {fileStream.Length}");
 					} else {
 						Console.WriteLine($"Error: {dto.ErrorInfo?.ErrorCode} {dto.ErrorInfo?.Message}");
 					}
+					response.EnsureSuccessStatusCode();
 				}
 			}
 			return returnResult;
