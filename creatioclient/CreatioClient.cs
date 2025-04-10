@@ -29,7 +29,6 @@ namespace Creatio.Client
 
 		#region Fields: Private
 
-		private readonly string _appUrl;
 		private readonly string _userName;
 		private readonly string _userPassword;
 		private readonly bool _isNetCore;
@@ -40,77 +39,20 @@ namespace Creatio.Client
 		private int _delaySec = 1;
 		private RetryPolicy _retryPolicy = RetryPolicy.Simple;
 		private readonly ICredentials _credentials;
+		private string _appUrl;
 
-		#endregion
-
-		#region Constructors: Private
-
-		private CreatioClient(string appUrl, bool isNetCore = false){
-			_appUrl = appUrl;
-			_isNetCore = isNetCore;
-		}
-
-		#endregion
-
-		#region Constructors: Public
-
-		/// <summary>
-		/// Initializes a new instance of the <see cref="CreatioClient"/> class.
-		/// </summary>
-		/// <param name="appUrl">The URL of the Creatio application.</param>
-		/// <param name="userName">The username to use for authentication.</param>
-		/// <param name="userPassword">The password to use for authentication.</param>
-		/// <param name="isNetCore">Optional. A boolean value indicating whether the client is running on .NET Core. Default is false.</param>
-		public CreatioClient(string appUrl, string userName, string userPassword, bool isNetCore = false){
-			_appUrl = appUrl;
-			_userName = userName;
-			_userPassword = userPassword;
-			_isNetCore = isNetCore;
-		}
-
-		/// <summary>
-		/// Initializes a new instance of the <see cref="CreatioClient"/> class.
-		/// </summary>
-		/// <param name="appUrl">The URL of the Creatio application.</param>
-		/// <param name="userName">The username to use for authentication.</param>
-		/// <param name="userPassword">The password to use for authentication.</param>
-		/// <param name="useUntrustedSsl">A boolean value indicating whether to use untrusted SSL.</param>
-		/// <param name="isNetCore">Optional. A boolean value indicating whether the client is running on .NET Core. Default is false.</param>
-		public CreatioClient(string appUrl, string userName, string userPassword, bool useUntrustedSsl, bool isNetCore = false){
-			_appUrl = appUrl;
-			_userName = userName;
-			_userPassword = userPassword;
-			_useUntrustedSsl = useUntrustedSsl;
-			_isNetCore = isNetCore;
-		}
-		
-		/// <summary>
-		/// Initializes a new instance of the <see cref="CreatioClient"/> class with NTLM authentication.
-		/// </summary>
-		/// <param name="appUrl">The URL of the Creatio application.</param>
-		/// <param name="useUntrustedSsl">A boolean value indicating whether to use untrusted SSL.</param>
-		/// <param name="credentials">The credentials to use for NTLM authentication.</param>
-		/// <param name="isNetCore">Optional. A boolean value indicating whether the client is running on .NET Core. Default is false.</param>
-		/// <example>
-		/// <code>
-		/// string appUrl = "https://someName.creatio.com";
-		/// CreatioClient client = new(appUrl, true, CredentialCache.DefaultNetworkCredentials);
-		/// </code>
-		/// </example>
-		public CreatioClient(string appUrl, bool useUntrustedSsl, ICredentials credentials, bool isNetCore = false){
-			_credentials = credentials;
-			_appUrl = appUrl;
-			_isNetCore = isNetCore;
-			_useUntrustedSsl = useUntrustedSsl;
-		}
-		
 		#endregion
 
 		#region Properties: Private
 
-		private string LoginUrl => _appUrl.TrimEnd('/') + @"/ServiceModel/AuthService.svc/Login";
+		private string AppUrl {
+			get => _appUrl;
+			set => _appUrl = NormalizeUrl(value);
+		}
 
-		private string PingUrl => _appUrl.TrimEnd('/') + @"/0/ping";
+		private string LoginUrl => AppUrl + @"/ServiceModel/AuthService.svc/Login";
+
+		private string PingUrl => AppUrl + @"/0/ping";
 
 		#endregion
 
@@ -141,6 +83,15 @@ namespace Creatio.Client
 
 		#region Methods: Private
 
+		/// <summary>
+		/// Ensures the URL has no trailing slash.
+		/// </summary>
+		/// <param name="url">The URL to process.</param>
+		/// <returns>The URL without a trailing slash.</returns>
+		private static string NormalizeUrl(string url) {
+			return url.TrimEnd('/');
+		}
+
 		private static async Task<string> GetAccessTokenByClientCredentials(string authApp, string clientId,
 			string clientSecret){
 			using (HttpClient client = new HttpClient()) {
@@ -158,14 +109,14 @@ namespace Creatio.Client
 		}
 
 		private void AddCsrfToken(HttpWebRequest request){
-			Cookie cookie = request.CookieContainer.GetCookies(new Uri(_appUrl))["BPMCSRF"];
+			Cookie cookie = request.CookieContainer.GetCookies(new Uri(AppUrl))["BPMCSRF"];
 			if (cookie != null) {
 				request.Headers.Add("BPMCSRF", cookie.Value);
 			}
 		}
 
 		private void AddCsrfToken(HttpClient client){
-			Cookie cookie = AuthCookie?.GetCookies(new Uri(_appUrl))["BPMCSRF"];
+			Cookie cookie = AuthCookie?.GetCookies(new Uri(AppUrl))["BPMCSRF"];
 			if (cookie != null) {
 				client.DefaultRequestHeaders.Add("BPMCSRF", cookie.Value);
 			}
@@ -184,7 +135,7 @@ namespace Creatio.Client
 		}
 
 		private string CreateConfigurationServiceUrl(string serviceName, string methodName){
-			return $"{_appUrl}/{WorkspaceId}/rest/{serviceName}/{methodName}";
+			return $"{AppUrl}/{WorkspaceId}/rest/{serviceName}/{methodName}";
 		}
 
 		private HttpClientHandler CreateCreatioHandler(ICredentials credentials = null, CookieContainer cookieContainer = null){
@@ -247,7 +198,7 @@ namespace Creatio.Client
 		private async Task NtlmLogin(int requestTimeout = 100000){
 			CookieContainer cookieContainer = new CookieContainer();
 			const string loginUrl = "/Login/NuiLogin.aspx?ntlmlogin";
-			Uri loginUri = new Uri(_appUrl + loginUrl);
+			Uri loginUri = new Uri(AppUrl + loginUrl);
 			
 			using(HttpClientHandler handler = CreateCreatioHandler(_credentials, cookieContainer)) {
 				using(HttpClient client = new HttpClient(handler)) {
@@ -280,7 +231,7 @@ namespace Creatio.Client
 
 		private void StartListeningSignalR(CancellationToken cancellationToken){
 			Thread thread = new Thread(() => {
-				IWsListener ws = new WsListenerSignalR(_appUrl, this, cancellationToken);
+				IWsListener ws = new WsListenerSignalR(AppUrl, this, cancellationToken);
 				ws.MessageReceived += (sender, message) => { MessageReceived?.Invoke(sender, message); };
 				ws.ConnectionStateChanged += (sender, state) => { ConnectionStateChanged?.Invoke(sender, state); };
 				ws.StartListening();
@@ -291,7 +242,7 @@ namespace Creatio.Client
 
 		private void StartListeningNetFrameworkApp(CancellationToken cancellationToken){
 			Thread thread = new Thread(() => {
-				IWsListener ws = new WsListenerNetFramework(_appUrl, this, cancellationToken);
+				IWsListener ws = new WsListenerNetFramework(AppUrl, this, cancellationToken);
 				ws.MessageReceived += (sender, message) => { MessageReceived?.Invoke(sender, message); };
 				ws.ConnectionStateChanged += (sender, state) => { ConnectionStateChanged?.Invoke(sender, state); };
 				ws.StartListening();
@@ -320,6 +271,69 @@ namespace Creatio.Client
 			messages.ToList().ForEach(m => MessageReceived?.Invoke(this, m));
 		}
 
+		#endregion
+
+		#region Constructors: Private
+
+		private CreatioClient(string appUrl, bool isNetCore = false){
+			AppUrl = appUrl;
+			_isNetCore = isNetCore;
+		}
+
+		#endregion
+
+		#region Constructors: Public
+
+		/// <summary>
+		/// Initializes a new instance of the <see cref="CreatioClient"/> class.
+		/// </summary>
+		/// <param name="appUrl">The URL of the Creatio application.</param>
+		/// <param name="userName">The username to use for authentication.</param>
+		/// <param name="userPassword">The password to use for authentication.</param>
+		/// <param name="isNetCore">Optional. A boolean value indicating whether the client is running on .NET Core. Default is false.</param>
+		public CreatioClient(string appUrl, string userName, string userPassword, bool isNetCore = false){
+			AppUrl = appUrl;
+			_userName = userName;
+			_userPassword = userPassword;
+			_isNetCore = isNetCore;
+		}
+
+		/// <summary>
+		/// Initializes a new instance of the <see cref="CreatioClient"/> class.
+		/// </summary>
+		/// <param name="appUrl">The URL of the Creatio application.</param>
+		/// <param name="userName">The username to use for authentication.</param>
+		/// <param name="userPassword">The password to use for authentication.</param>
+		/// <param name="useUntrustedSsl">A boolean value indicating whether to use untrusted SSL.</param>
+		/// <param name="isNetCore">Optional. A boolean value indicating whether the client is running on .NET Core. Default is false.</param>
+		public CreatioClient(string appUrl, string userName, string userPassword, bool useUntrustedSsl, bool isNetCore = false){
+			AppUrl = appUrl;
+			_userName = userName;
+			_userPassword = userPassword;
+			_useUntrustedSsl = useUntrustedSsl;
+			_isNetCore = isNetCore;
+		}
+		
+		/// <summary>
+		/// Initializes a new instance of the <see cref="CreatioClient"/> class with NTLM authentication.
+		/// </summary>
+		/// <param name="appUrl">The URL of the Creatio application.</param>
+		/// <param name="useUntrustedSsl">A boolean value indicating whether to use untrusted SSL.</param>
+		/// <param name="credentials">The credentials to use for NTLM authentication.</param>
+		/// <param name="isNetCore">Optional. A boolean value indicating whether the client is running on .NET Core. Default is false.</param>
+		/// <example>
+		/// <code>
+		/// string appUrl = "https://someName.creatio.com";
+		/// CreatioClient client = new(appUrl, true, CredentialCache.DefaultNetworkCredentials);
+		/// </code>
+		/// </example>
+		public CreatioClient(string appUrl, bool useUntrustedSsl, ICredentials credentials, bool isNetCore = false){
+			_credentials = credentials;
+			AppUrl = appUrl;
+			_isNetCore = isNetCore;
+			_useUntrustedSsl = useUntrustedSsl;
+		}
+		
 		#endregion
 
 		#region Methods: Public
@@ -420,12 +434,12 @@ namespace Creatio.Client
 					using (StreamReader reader = new StreamReader(response.GetResponseStream())) {
 						string responseMessage = reader.ReadToEnd();
 						if (responseMessage.Contains("\"Code\":1")) {
-							throw new UnauthorizedAccessException($"Unauthorized {_userName} for {_appUrl}");
+							throw new UnauthorizedAccessException($"Unauthorized {_userName} for {AppUrl}");
 						}
 					}
 					string authCookieName = ".ASPXAUTH";
 					string authCookieValue = response.Cookies[authCookieName].Value;
-					_authCookie.Add(new Uri(_appUrl), new Cookie(authCookieName, authCookieValue));
+					_authCookie.Add(new Uri(AppUrl), new Cookie(authCookieName, authCookieValue));
 				}
 			}
 		}
@@ -451,12 +465,12 @@ namespace Creatio.Client
 					using (StreamReader reader = new StreamReader(response.GetResponseStream())) {
 						string responseMessage = reader.ReadToEnd();
 						if (responseMessage.Contains("\"Code\":1")) {
-							throw new UnauthorizedAccessException($"Unauthorized {_userName} for {_appUrl}");
+							throw new UnauthorizedAccessException($"Unauthorized {_userName} for {AppUrl}");
 						}
 					}
 					string authCookieName = ".ASPXAUTH";
 					string authCookieValue = response.Cookies[authCookieName].Value;
-					_authCookie.Add(new Uri(_appUrl), new Cookie(authCookieName, authCookieValue));
+					_authCookie.Add(new Uri(AppUrl), new Cookie(authCookieName, authCookieValue));
 				}
 			}
 		}
@@ -610,7 +624,7 @@ namespace Creatio.Client
 						msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _oauthToken);
 						
 					}else {
-						msg.Headers.Add("BPMCSRF", AuthCookie.GetCookies(new Uri(_appUrl))["BPMCSRF"]?.Value);
+						msg.Headers.Add("BPMCSRF", AuthCookie.GetCookies(new Uri(AppUrl))["BPMCSRF"]?.Value);
 					}
 					msg.Content = new ByteArrayContent(buffer);
 					msg.Content.Headers.ContentType = new MediaTypeHeaderValue(mime);
@@ -685,3 +699,4 @@ namespace Creatio.Client
 
 	#endregion
 }
+
