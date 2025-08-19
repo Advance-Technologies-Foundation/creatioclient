@@ -593,10 +593,67 @@ namespace Creatio.Client
 			return mimeType;
 		}
 		
+		public string UploadStaticFile(string url, string filePath, string folderName, int defaultTimeout = 100_000, int chunkSize = 1 * 1024 * 1024){
+			return UploadStaticFileAsync(url, filePath, folderName, defaultTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
+		}
+		
+		public async Task<string> UploadStaticFileAsync(string url, string filePath, string folderName, int defaultTimeout = 100_000, int chunkSize = 30 * 1024 * 1024){
+			
+			long totalBytesRead = 0;
+			HttpClient client = new HttpClient(CreateCreatioHandler(cookieContainer: AuthCookie));
+			FileInfo fileInfo = new FileInfo(filePath);
+			string fileName = fileInfo.Name;
+			string mime = GetMimeTypeFromFileExtension(fileInfo.Extension);
+			
+			string returnResult = string.Empty;
+			using (FileStream fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read)) {
+				while(fileStream.Length > totalBytesRead) {
+					string url2 = url  +
+						"&fileName=" + fileName + $"folderName={folderName}";
+					Uri.TryCreate(url2, UriKind.Absolute, out Uri uri);
+					
+					if(fileStream.Length - totalBytesRead < chunkSize) {
+						chunkSize = (int)(fileStream.Length - totalBytesRead);
+					}
+					byte[] buffer = new byte[chunkSize];
+					var bytesRead = await fileStream.ReadAsync(buffer, 0, chunkSize);
+					var msg = new HttpRequestMessage();
+					msg.Method = HttpMethod.Post;
+					
+					if(!string.IsNullOrEmpty(_oauthToken)) {
+						msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _oauthToken);
+						
+					}else {
+						msg.Headers.Add("BPMCSRF", AuthCookie.GetCookies(new Uri(AppUrl))["BPMCSRF"]?.Value);
+					}
+					msg.Content = new ByteArrayContent(buffer);
+					msg.Content.Headers.ContentType = new MediaTypeHeaderValue(mime);
+					msg.Content.Headers.ContentRange = new ContentRangeHeaderValue(totalBytesRead, totalBytesRead+chunkSize -1, fileStream.Length);
+					msg.Content.Headers.ContentDisposition = new ContentDispositionHeaderValue("attachment") {
+						FileName = fileName,
+					};
+					msg.RequestUri = uri;
+					totalBytesRead += bytesRead;
+					
+					HttpResponseMessage response  = await client.SendAsync(msg);
+					string resultString = await response.Content.ReadAsStringAsync();
+					returnResult = resultString;
+					FileUploadResponseDto dto = JsonConvert.DeserializeObject<FileUploadResponseDto>(resultString);
+					if (response.StatusCode == HttpStatusCode.OK && dto.Success) {
+						int precentageUploaded = (int)((totalBytesRead * 100) / fileStream.Length);
+						Console.WriteLine($"Chunk upload OK [{precentageUploaded} %]: {totalBytesRead} of {fileStream.Length}");
+					} else {
+						Console.WriteLine($"Error: {dto.ErrorInfo?.ErrorCode} {dto.ErrorInfo?.Message}");
+					}
+					response.EnsureSuccessStatusCode();
+				}
+			}
+			return returnResult;
+		}
+
 		public string UploadFile(string url, string filePath, int defaultTimeout = 100_000, int chunkSize = 1 * 1024 * 1024){
 			return UploadFileAsync(url, filePath, defaultTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
 		}
-		
 		public async Task<string> UploadFileAsync(string url, string filePath, int defaultTimeout = 100_000, int chunkSize = 1 * 1024 * 1024){
 			
 			long totalBytesRead = 0;
