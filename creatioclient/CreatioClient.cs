@@ -108,6 +108,57 @@ namespace Creatio.Client
 			}
 		}
 
+		private static void ValidateUploadInfo(FileUploadInfo uploadInfo) {
+			if (uploadInfo == null) {
+				throw new ArgumentNullException(nameof(uploadInfo), "UploadInfo cannot be null");
+			}
+			if (string.IsNullOrEmpty(uploadInfo.FilePath) || !File.Exists(uploadInfo.FilePath)) {
+				throw new FileNotFoundException("FilePath is null or file does not exist", uploadInfo.FilePath);
+			}
+			if (string.IsNullOrEmpty(uploadInfo.EntitySchemaName)) {
+				throw new ArgumentException("EntitySchemaName cannot be null or empty", nameof(uploadInfo.EntitySchemaName));
+			}
+			if (string.IsNullOrEmpty(uploadInfo.ColumnName)) {
+				throw new ArgumentException("ColumnName cannot be null or empty", nameof(uploadInfo.ColumnName));
+			}
+			if (string.IsNullOrEmpty(uploadInfo.ParentColumnName)) {
+				throw new ArgumentException("ParentColumnName cannot be null or empty", nameof(uploadInfo.ParentColumnName));
+			}
+			if (uploadInfo.ParentColumnValue == Guid.Empty) {
+				throw new ArgumentException("ParentColumnValue cannot be empty Guid", nameof(uploadInfo.ParentColumnValue));
+			}
+		}
+
+		private static Uri BuildUploadUri(string baseUrl, long totalFileLength, Guid fileId, FileUploadInfo uploadInfo,
+				string fileName, string mime) {
+			var sb = new StringBuilder();
+			sb.Append(baseUrl);
+			sb.Append($"?totalFileLength={totalFileLength}");
+			sb.Append($"&fileId={fileId}");
+			sb.Append($"&columnName={uploadInfo.ColumnName}");
+			sb.Append($"&fileName={fileName}&mimeType={Uri.EscapeDataString(mime)}");
+			sb.Append($"&parentColumnName={uploadInfo.ParentColumnName}");
+			sb.Append($"&parentColumnValue={uploadInfo.ParentColumnValue}");
+			sb.Append($"&entitySchemaName={uploadInfo.EntitySchemaName}");
+			if (uploadInfo.AdditionalParams != null && uploadInfo.AdditionalParams.Count > 0) {
+				var serializedParams = JsonConvert.SerializeObject(uploadInfo.AdditionalParams);
+				sb.Append($"&AdditionalParams={Uri.EscapeDataString(serializedParams)}");
+			}
+			Uri.TryCreate(sb.ToString(), UriKind.Absolute, out Uri uri);
+			return uri;
+		}
+
+		private static void HandleUploadResponse(HttpResponseMessage response, string resultString,
+				long totalBytesRead, long totalLength) {
+			FileUploadResponseDto dto = JsonConvert.DeserializeObject<FileUploadResponseDto>(resultString);
+			if (response.StatusCode == HttpStatusCode.OK && dto.Success) {
+				int percentageUploaded = (int)((totalBytesRead * 100) / totalLength);
+				Console.WriteLine($"Chunk upload OK [{percentageUploaded} %]: {totalBytesRead} of {totalLength}");
+			} else {
+				Console.WriteLine($"Error: {dto.ErrorInfo?.ErrorCode} {dto.ErrorInfo?.Message}");
+			}
+		}
+
 		private void AddCsrfToken(HttpWebRequest request){
 			Cookie cookie = request.CookieContainer.GetCookies(new Uri(AppUrl))["BPMCSRF"];
 			if (cookie != null) {
@@ -154,8 +205,9 @@ namespace Creatio.Client
 			return handler;
 		}
 
-		private HttpWebRequest CreateCreatioRequest(string url, string requestData = null, int requestTimeout = 100000){
-			HttpWebRequest request = CreateRequest(url);
+		private HttpWebRequest CreateCreatioRequest(string url, string requestData = null, int requestTimeout = 100000,
+				string method = "POST"){
+			HttpWebRequest request = CreateRequest(url, method);
 			if (_useUntrustedSsl) {
 				request.ServerCertificateValidationCallback = (message, cert, chain, errors) => true;
 			}
@@ -170,13 +222,13 @@ namespace Creatio.Client
 			return request;
 		}
 
-		private HttpWebRequest CreateRequest(string url){
+		private HttpWebRequest CreateRequest(string url, string method = "POST") {
 			HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
 			if (_useUntrustedSsl) {
 				request.ServerCertificateValidationCallback = (message, cert, chain, errors) => true;
 			}
 			request.ContentType = "application/json; charset=utf-8";
-			request.Method = "POST";
+			request.Method = method;
 			request.KeepAlive = true;
 			return request;
 		}
@@ -261,6 +313,25 @@ namespace Creatio.Client
 				}
 			}
 			return false;
+		}
+
+		private HttpRequestMessage CreateUploadRequestMessage(Uri uri, byte[] buffer, long totalBytesRead,
+				int chunkSize, long totalLength, string fileName, string mime) {
+			var msg = new HttpRequestMessage();
+			msg.Method = HttpMethod.Post;
+			if (!string.IsNullOrEmpty(_oauthToken)) {
+				msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _oauthToken);
+			} else {
+				msg.Headers.Add("BPMCSRF", AuthCookie.GetCookies(new Uri(AppUrl))["BPMCSRF"]?.Value);
+			}
+			msg.Content = new ByteArrayContent(buffer);
+			msg.Content.Headers.ContentType = new MediaTypeHeaderValue(mime);
+			msg.Content.Headers.ContentRange = new ContentRangeHeaderValue(totalBytesRead, totalBytesRead + chunkSize - 1, totalLength);
+			msg.Content.Headers.ContentDisposition = new ContentDispositionHeaderValue("attachment") {
+				FileName = fileName,
+			};
+			msg.RequestUri = uri;
+			return msg;
 		}
 
 		#endregion
@@ -370,7 +441,6 @@ namespace Creatio.Client
 
 		public string ExecutePostRequest(string url, string requestData, int requestTimeout = 10000, int retryCount = 1, int delaySec = 1){
 			return Retry<string>(() => {
-				//HttpClientHandler handler = CreateCreatioHandler();
 				using( var handler = CreateCreatioHandler()) {
 					if (_oauthToken != null) {
 						using (HttpClient client = new HttpClient(handler)) {
@@ -750,6 +820,58 @@ namespace Creatio.Client
 			_delaySec = delaySec;
 			_retryPolicy = retryPolicy;
 		}
+
+		/// <inheritdoc/>
+		public async Task<string> UploadAttachmentAsync(FileUploadInfo uploadInfo, int timeout = 100000,
+				int chunkSize = 1048576) {
+			ValidateUploadInfo(uploadInfo);
+			long totalBytesRead = 0;
+			HttpClient client = new HttpClient(CreateCreatioHandler(cookieContainer: AuthCookie));
+			var filePath = uploadInfo.FilePath;
+			FileInfo fileInfo = new FileInfo(uploadInfo.FilePath);
+			string fileName = fileInfo.Name;
+			string mime = GetMimeTypeFromFileExtension(fileInfo.Extension);
+			var url = CreateConfigurationServiceUrl("FileApiService", "UploadFile");
+			string returnResult = string.Empty;
+			var fileId = Guid.NewGuid();
+			using (FileStream fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read)) {
+				while (fileStream.Length > totalBytesRead) {
+					Uri uri = BuildUploadUri(url, fileStream.Length, fileId, uploadInfo, fileName, mime);
+					int currentChunkSize = (int)Math.Min(chunkSize, fileStream.Length - totalBytesRead);
+					byte[] buffer = new byte[currentChunkSize];
+					var bytesRead = await fileStream.ReadAsync(buffer, 0, currentChunkSize);
+					var msg = CreateUploadRequestMessage(uri, buffer, totalBytesRead, currentChunkSize,
+						fileStream.Length, fileName, mime);
+					totalBytesRead += bytesRead;
+					var response = Retry<HttpResponseMessage>(() => client.SendAsync(msg).Result, _retryCount,
+						_delaySec, _retryPolicy);
+					string resultString = await response.Content.ReadAsStringAsync();
+					returnResult = resultString;
+					HandleUploadResponse(response, resultString, totalBytesRead, fileStream.Length);
+					response.EnsureSuccessStatusCode();
+				}
+			}
+			return returnResult;
+		}
+
+		public bool DownloadAttachment(string schemaName, Guid recordId, string filePath, int timeout = 100000) {
+			if (string.IsNullOrEmpty(schemaName)) {
+				throw new ArgumentException("SchemaName cannot be null or empty", nameof(schemaName));
+			}
+			if (recordId == Guid.Empty) {
+				throw new ArgumentException("RecordId cannot be empty Guid", nameof(recordId));
+			}
+			if (string.IsNullOrEmpty(filePath)) {
+				throw new ArgumentException("FilePath cannot be null or empty", nameof(filePath));
+			}
+			string url = $"{CreateConfigurationServiceUrl("FileService", "Download")}/{schemaName}/{recordId}";
+			HttpWebRequest request = CreateCreatioRequest(url, null, timeout, "GET");
+			return Retry<bool>(() => {
+				request.SaveToFile(filePath);
+				return true;
+			}, _retryCount, _delaySec, _retryPolicy);
+		}
+
 		#endregion
 
 	}

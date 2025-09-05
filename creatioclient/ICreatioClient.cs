@@ -101,6 +101,27 @@ namespace Creatio.Client
 		/// <param name="retryPolicy">The retry policy to use for the HTTP call. See <see cref="RetryPolicy"/>.</param>
 		void SetRetryPolicy(int retryCount, int delaySec, RetryPolicy retryPolicy);
 
+		/// <summary>
+		/// Uploads an attachment to a Creatio entity.
+		/// </summary>
+		/// <param name="uploadInfo">Information about the file to upload</param>
+		/// <param name="timeout">Timeout for the upload request in milliseconds. Default is 100000.</param>
+		/// <param name="chunkSize">Size of each chunk to upload in bytes. Default is 1 MB.</param>
+		/// <returns>Response information from Creatio after file uploaded</returns>
+		Task<string> UploadAttachmentAsync(FileUploadInfo uploadInfo, int timeout = 100_000,
+			int chunkSize = 1 * 1024 * 1024);
+
+
+		/// <summary>
+		/// Downloads an attachment from a Creatio entity and saves it to the specified file path.
+		/// </summary>
+		/// <param name="schemaName">The name of the entity schema containing the attachment.</param>
+		/// <param name="recordId">The unique identifier of the record containing the attachment.</param>
+		/// <param name="filePath">The local file path where the attachment will be saved.</param>
+		/// <param name="timeout">Timeout for the download request in milliseconds. Default is 100000.</param>
+		/// <returns>True if the download was successful; otherwise, false.</returns>
+		bool DownloadAttachment(string schemaName, Guid recordId, string filePath, int timeout = 100_000);
+
 		#endregion
 
 	}
