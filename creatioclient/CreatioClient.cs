@@ -150,12 +150,17 @@ namespace Creatio.Client
 
 		private static void HandleUploadResponse(HttpResponseMessage response, string resultString,
 				long totalBytesRead, long totalLength) {
-			FileUploadResponseDto dto = JsonConvert.DeserializeObject<FileUploadResponseDto>(resultString);
-			if (response.StatusCode == HttpStatusCode.OK && dto.Success) {
-				int percentageUploaded = (int)((totalBytesRead * 100) / totalLength);
-				Console.WriteLine($"Chunk upload OK [{percentageUploaded} %]: {totalBytesRead} of {totalLength}");
-			} else {
-				Console.WriteLine($"Error: {dto.ErrorInfo?.ErrorCode} {dto.ErrorInfo?.Message}");
+			try {
+				FileUploadResponseDto dto = JsonConvert.DeserializeObject<FileUploadResponseDto>(resultString);
+				if (response.StatusCode == HttpStatusCode.OK && dto.Success) {
+					int percentageUploaded = (int)((totalBytesRead * 100) / totalLength);
+					Console.WriteLine($"Chunk upload OK [{percentageUploaded} %]: {totalBytesRead} of {totalLength}");
+				} else {
+					Console.WriteLine($"Error: {dto.ErrorInfo?.ErrorCode} {dto.ErrorInfo?.Message}");
+				}	
+			} catch {
+				Console.WriteLine("Error deserializing upload response: " + resultString);
+				throw new ArgumentException("Error deserializing upload response", nameof(response));
 			}
 		}
 
@@ -823,10 +828,9 @@ namespace Creatio.Client
 
 		/// <inheritdoc/>
 		public async Task<string> UploadAttachmentAsync(FileUploadInfo uploadInfo, int timeout = 100000,
-				int chunkSize = 1048576) {
+			int chunkSize = 1048576) {
 			ValidateUploadInfo(uploadInfo);
 			long totalBytesRead = 0;
-			HttpClient client = new HttpClient(CreateCreatioHandler(cookieContainer: AuthCookie));
 			var filePath = uploadInfo.FilePath;
 			FileInfo fileInfo = new FileInfo(uploadInfo.FilePath);
 			string fileName = fileInfo.Name;
@@ -834,21 +838,24 @@ namespace Creatio.Client
 			var url = CreateConfigurationServiceUrl("FileApiService", "UploadFile");
 			string returnResult = string.Empty;
 			var fileId = Guid.NewGuid();
-			using (FileStream fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read)) {
-				while (fileStream.Length > totalBytesRead) {
-					Uri uri = BuildUploadUri(url, fileStream.Length, fileId, uploadInfo, fileName, mime);
-					int currentChunkSize = (int)Math.Min(chunkSize, fileStream.Length - totalBytesRead);
-					byte[] buffer = new byte[currentChunkSize];
-					var bytesRead = await fileStream.ReadAsync(buffer, 0, currentChunkSize);
-					var msg = CreateUploadRequestMessage(uri, buffer, totalBytesRead, currentChunkSize,
-						fileStream.Length, fileName, mime);
-					totalBytesRead += bytesRead;
-					var response = Retry<HttpResponseMessage>(() => client.SendAsync(msg).Result, _retryCount,
-						_delaySec, _retryPolicy);
-					string resultString = await response.Content.ReadAsStringAsync();
-					returnResult = resultString;
-					HandleUploadResponse(response, resultString, totalBytesRead, fileStream.Length);
-					response.EnsureSuccessStatusCode();
+			using (var client = new HttpClient(CreateCreatioHandler(cookieContainer: AuthCookie))) {
+				using (FileStream fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read)) {
+					while (fileStream.Length > totalBytesRead) {
+						Uri uri = BuildUploadUri(url, fileStream.Length, fileId, uploadInfo, fileName, mime);
+						int currentChunkSize = (int)Math.Min(chunkSize, fileStream.Length - totalBytesRead);
+						byte[] buffer = new byte[currentChunkSize];
+						var bytesRead = await fileStream.ReadAsync(buffer, 0, currentChunkSize);
+						totalBytesRead += bytesRead;
+						var response = Retry<HttpResponseMessage>(() => {
+							var msg = CreateUploadRequestMessage(uri, buffer, totalBytesRead - bytesRead,
+								currentChunkSize, fileStream.Length, fileName, mime);
+							return client.SendAsync(msg).Result;
+						}, _retryCount, _delaySec, _retryPolicy);
+						string resultString = await response.Content.ReadAsStringAsync();
+						returnResult = resultString;
+						response.EnsureSuccessStatusCode();
+						HandleUploadResponse(response, resultString, totalBytesRead, fileStream.Length);
+					}
 				}
 			}
 			return returnResult;
