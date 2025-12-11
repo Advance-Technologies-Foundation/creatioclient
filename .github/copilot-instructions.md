@@ -22,9 +22,9 @@ Automates version management and release creation for NuGet publishing.
 - **GitHub Release Creation**: Publishes releases with automated notes
 - **CI/CD Automation**: Triggers NuGet publishing workflow automatically
 
-**Version Formats:**
-- If current tag is `1.0.30`, next is `1.0.30.1`
-- If current tag is `1.0.30.1`, next is `1.0.30.2`
+**Version Format:**
+- Uses semantic versioning: X.Y.Z (e.g., 1.0.30 → 1.0.31)
+- Increments patch version (Z) by 1
 - First release starts at `1.0.1`
 
 **Usage Examples:**

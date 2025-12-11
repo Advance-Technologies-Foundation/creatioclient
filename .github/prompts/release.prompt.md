@@ -29,11 +29,10 @@ instructions: |
      git describe --tags --abbrev=0
      ```
 
-  3. **Parse and validate the current version** - it should be in format X.Y.Z or X.Y.Z.W (e.g., 1.0.30 or 1.0.30.1):
+  3. **Parse and validate the current version** - it should be in format X.Y.Z (e.g., 1.0.30):
      - Remove 'v' prefix if present (v1.0.30 → 1.0.30)
-     - Validate format with regex: ^\d+\.\d+\.\d+(\.\d+)?$
-     - If version is X.Y.Z format, next will be X.Y.Z.1
-     - If version is X.Y.Z.W format, increment W: X.Y.Z.(W+1)
+     - Validate format with regex: ^\d+\.\d+\.\d+$
+     - Increment the patch version (last digit): 1.0.30 → 1.0.31
 
   4. **Update project version** in creatioclient/creatioclient.csproj:
      - Update AssemblyVersion element to match the new version
@@ -71,15 +70,15 @@ instructions: |
   
   # Step 2-4: Version management
   Current tag: 1.0.30
-  Next version: 1.0.30.1
+  Next version: 1.0.31
   
   # Step 5-7: Update and create release
   Commands:
     # Update creatioclient/creatioclient.csproj version
-    sed -i 's|<AssemblyVersion[^>]*>[^<]*</AssemblyVersion>|<AssemblyVersion Condition="'\''$(AssemblyVersion)'\'' == '\'''\''">1.0.30.1</AssemblyVersion>|g' creatioclient/creatioclient.csproj
-    git tag 1.0.30.1
-    git push origin 1.0.30.1
-    gh release create 1.0.30.1 --title "Release 1.0.30.1" --notes "Automated release 1.0.30.1"
+    sed -i 's|<AssemblyVersion[^>]*>[^<]*</AssemblyVersion>|<AssemblyVersion Condition="'\''$(AssemblyVersion)'\'' == '\'''\''">1.0.31</AssemblyVersion>|g' creatioclient/creatioclient.csproj
+    git tag 1.0.31
+    git push origin 1.0.31
+    gh release create 1.0.31 --title "Release 1.0.31" --notes "Automated release 1.0.31"
   ```
 
   **Error handling:**
@@ -95,7 +94,7 @@ instructions: |
   - **Always start with GitHub CLI check and installation** - this is the most important step
   - Detect OS (macOS/Windows/Linux) and provide appropriate installation command
   - Check authentication status: `gh auth status` after installation
-  - Version format can be X.Y.Z or X.Y.Z.W (more flexible than clio's strict 4-part format)
+  - Version format can be X.Y.Z (simple semantic versioning)
   - Handle authentication gracefully with helpful error messages
   - Even if CLI setup fails, continue with tag creation and provide manual release link
   - Monitor progress at: https://github.com/Advance-Technologies-Foundation/creatioclient/actions
