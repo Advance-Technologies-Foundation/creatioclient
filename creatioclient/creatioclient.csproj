@@ -15,11 +15,11 @@
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageTags>creatio;api;client;netstandard;bpm;crm</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <AssemblyVersion>1.0.30</AssemblyVersion>
-    <FileVersion>1.0.30</FileVersion>
-    <Version>1.0.31</Version>
+    <AssemblyVersion>1.0.33</AssemblyVersion>
+    <FileVersion>1.0.33</FileVersion>
+    <Version>1.0.33</Version>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-    <PackageReleaseNotes>Version 1.0.31 release</PackageReleaseNotes>
+    <PackageReleaseNotes>Version 1.0.33 release with ExecuteDeleteRequest support</PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>
