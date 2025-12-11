@@ -1,0 +1,79 @@
+name: release-to-nuget
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    name: release-to-nuget
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Extract Version from Tag
+        id: extract_version
+        run: |
+          tag="${{ github.event.release.tag_name }}"
+          # Remove 'v' prefix if present (e.g., v1.0.30 -> 1.0.30)
+          version="${tag#v}"
+          
+          # Validate version format (should be like 1.0.30 or 1.0.30.1)
+          if ! [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+            echo "Invalid version format: $version. Expected format: X.Y.Z or X.Y.Z.W (e.g., 1.0.30)"
+            exit 1
+          fi
+          
+          echo "VERSION=$version" >> $GITHUB_OUTPUT
+          echo "Extracted version: $version"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore Dependencies
+        run: dotnet restore
+
+      - name: Test Solution
+        run: |
+          version="${{ steps.extract_version.outputs.VERSION }}"
+          echo "Testing creatioclient with version: $version"
+          dotnet test ./creatioclient/creatioclient.csproj \
+            --configuration Release \
+            --no-restore \
+            --verbosity normal \
+            /p:AssemblyVersion=$version /p:FileVersion=$version /p:Version=$version
+
+      - name: Build
+        run: |
+          version="${{ steps.extract_version.outputs.VERSION }}"
+          echo "Building creatioclient with version: $version"
+          dotnet build ./creatioclient/creatioclient.csproj \
+            --configuration Release \
+            --no-restore \
+            /p:AssemblyVersion=$version /p:FileVersion=$version /p:Version=$version
+
+      - name: Pack
+        run: |
+          version="${{ steps.extract_version.outputs.VERSION }}"
+          echo "Packing creatioclient with version: $version"
+          dotnet pack ./creatioclient/creatioclient.csproj \
+            --configuration Release \
+            --no-build \
+            --output ./output \
+            /p:AssemblyVersion=$version /p:FileVersion=$version /p:Version=$version
+
+      - name: Publish to NuGet
+        env:
+          NUGET_API_KEY: ${{ secrets.CREATIOCLIENT_NUGET_API_KEY }}
+        run: |
+          version="${{ steps.extract_version.outputs.VERSION }}"
+          echo "Publishing creatioclient package version $version to NuGet..."
+          dotnet nuget push "./output/*.nupkg" \
+            --api-key ${{ secrets.CREATIOCLIENT_NUGET_API_KEY }} \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+          echo "Successfully published creatioclient $version to NuGet!"
