@@ -2,22 +2,32 @@
 
   <PropertyGroup>
     <TargetFramework>netstandard2.0</TargetFramework>
-    <Description>.net client to call creatio api in simple way (.net standart campatible)</Description>
-    <Authors>a.technologies.foundation@gmail.com</Authors>
+    <Description>.NET client to call Creatio API in simple way (.NET Standard compatible)</Description>
+    <Authors>Advance Technologies Foundation</Authors>
     <Company>ATF</Company>
     <PackageId>creatio.client</PackageId>
     <Product>creatio.client</Product>
     <AssemblyName>Creatio.Client</AssemblyName>
     <RootNamespace>Creatio.Client</RootNamespace>
     <RepositoryUrl>https://github.com/Advance-Technologies-Foundation/creatioclient</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/Advance-Technologies-Foundation/creatioclient</PackageProjectUrl>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>creatio;api;client;netstandard;bpm;crm</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <AssemblyVersion>1.0.30</AssemblyVersion>
     <FileVersion>1.0.30</FileVersion>
-    <Version>1.0.30</Version>
+    <Version>1.0.31</Version>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <PackageReleaseNotes>Version 1.0.31 release</PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>
