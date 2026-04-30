@@ -1,0 +1,99 @@
+name: release
+
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (X.Y.Z, e.g. 1.0.34)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ github.event.inputs.version }}"
+            tag="v$version"
+          else
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#v}"
+          fi
+          if ! [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid version format: '$version' (expected X.Y.Z, e.g. 1.0.34)"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag"         >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag (version $version)"
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore creatioclient.sln
+
+      - name: Build
+        run: |
+          dotnet build creatioclient/creatioclient.csproj \
+            --configuration Release \
+            --no-restore \
+            /p:Version=${{ steps.ver.outputs.version }} \
+            /p:AssemblyVersion=${{ steps.ver.outputs.version }} \
+            /p:FileVersion=${{ steps.ver.outputs.version }}
+
+      - name: Test
+        shell: bash
+        run: |
+          if find . -name "*.Tests.csproj" -not -path "*/bin/*" -not -path "*/obj/*" | grep -q .; then
+            dotnet test creatioclient.sln \
+              --configuration Release \
+              --no-build \
+              --verbosity normal
+          else
+            echo "No *.Tests.csproj found; skipping test step."
+          fi
+
+      - name: Pack
+        run: |
+          dotnet pack creatioclient/creatioclient.csproj \
+            --configuration Release \
+            --no-build \
+            --output ./output \
+            /p:Version=${{ steps.ver.outputs.version }} \
+            /p:AssemblyVersion=${{ steps.ver.outputs.version }} \
+            /p:FileVersion=${{ steps.ver.outputs.version }}
+
+      - name: Publish to NuGet
+        env:
+          NUGET_API_KEY: ${{ secrets.CREATIOCLIENT_NUGET_API_KEY }}
+        run: |
+          dotnet nuget push "./output/*.nupkg" \
+            --api-key "$NUGET_API_KEY" \
+            --source https://api.nuget.org/v3/index.json \
+            --skip-duplicate
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          generate_release_notes: true
+          files: ./output/*.nupkg
