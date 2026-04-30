@@ -15,11 +15,9 @@
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageTags>creatio;api;client;netstandard;bpm;crm</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <AssemblyVersion>1.0.33</AssemblyVersion>
-    <FileVersion>1.0.33</FileVersion>
-    <Version>1.0.33</Version>
+    <!-- Version is supplied by the release workflow from the git tag (e.g. v1.0.34 -> 1.0.34).
+         Local dev builds default to 1.0.0; release notes are managed via GitHub Releases. -->
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
-    <PackageReleaseNotes>Version 1.0.33 release with ExecuteDeleteRequest support</PackageReleaseNotes>
   </PropertyGroup>
 
   <ItemGroup>
