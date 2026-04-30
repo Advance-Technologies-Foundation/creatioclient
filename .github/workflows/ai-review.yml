@@ -1,0 +1,159 @@
+name: ai-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    name: Claude AI Code Review
+    runs-on: ubuntu-latest
+    # Skip the review bot's own comments to avoid loops
+    if: github.actor != 'github-actions[bot]'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Collect PR diff
+        id: diff
+        shell: bash
+        run: |
+          # Limit diff to 12 000 lines to stay well within the Claude context window.
+          # Strip binary hunks (they show as "Binary files differ").
+          git diff origin/${{ github.base_ref }}...HEAD \
+            -- '*.cs' '*.csproj' '*.sln' '*.md' '*.yml' '*.yaml' \
+            | head -n 12000 > /tmp/pr.diff
+
+          # Escape the diff so it can be embedded in a JSON string safely.
+          # We replace backslashes, double-quotes, and control characters.
+          python3 - <<'PYEOF'
+          import json, pathlib
+          raw = pathlib.Path("/tmp/pr.diff").read_text(errors="replace")
+          # json.dumps produces a valid JSON string literal incl. surrounding quotes
+          escaped = json.dumps(raw)
+          pathlib.Path("/tmp/pr_escaped.txt").write_text(escaped)
+          PYEOF
+
+      - name: Gather PR metadata
+        id: meta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TITLE=$(gh pr view ${{ github.event.pull_request.number }} --json title -q '.title')
+          BODY=$(gh pr view ${{ github.event.pull_request.number }} --json body -q '.body // ""' | head -c 2000)
+          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
+          # Use a delimiter to handle multi-line body safely
+          {
+            echo "body<<BODY_EOF"
+            echo "$BODY"
+            echo "BODY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Call Claude API
+        id: claude
+        shell: bash
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          DIFF_JSON=$(cat /tmp/pr_escaped.txt)   # already a JSON string literal
+
+          # Build request payload using Python to avoid shell quoting pitfalls
+          python3 - <<PYEOF
+          import json, pathlib
+
+          diff_raw = pathlib.Path("/tmp/pr.diff").read_text(errors="replace")
+
+          system_prompt = """You are an expert .NET code reviewer for the creatioclient library — \
+          a .NET Standard 2.0 HTTP/WebSocket client for the Creatio CRM/BPM platform. \
+          The library namespace is Creatio.Client. Key conventions:
+          - Microsoft C# naming: PascalCase types/methods, _camelCase private fields
+          - #region blocks for code organisation (Constants, Fields, Properties, Events, Constructors, Methods)
+          - All HTTP methods return raw string (JSON) — callers parse it
+          - Always use WebRequest.CreateHttp(), never WebRequest.Create()
+          - Check _oauthToken first, fall back to cookie + BPMCSRF header for auth
+          - Respect _useUntrustedSsl flag in any new HttpWebRequest or HttpClientHandler
+          - Wrap idempotent calls in the Retry<T> helper
+          - XML doc comments required on all public/interface members
+          - HttpClient is not pooled (known issue — do not introduce a shared static one without careful cookie handling)
+          Known weaknesses: zero test coverage, mixed HttpWebRequest/HttpClient usage, untyped string responses.
+          Review the diff with these project-specific rules in mind."""
+
+          user_content = f"""Please review this pull request.
+
+          **PR title:** {json.loads(open("/tmp/pr_escaped.txt").read()) and "" or ""}
+          **Diff (cs/csproj/yml/md files, up to 12 000 lines):**
+
+          ```diff
+          {diff_raw[:11000]}
+          ```
+
+          Provide a concise, actionable review covering:
+          1. **Correctness** — logic bugs, off-by-one errors, null-reference risks
+          2. **Security** — credentials in logs, SSL bypass, CSRF gaps
+          3. **.NET conventions** — naming, region structure, XML docs
+          4. **API surface** — interface consistency (ICreatioClient), breaking changes
+          5. **Error handling** — missing validation, swallowed exceptions
+          6. **Known pitfalls** — WebRequest.Create vs CreateHttp, HttpClient pooling, blocking async
+          7. **Suggested improvements** — optional but welcomed refactors or test ideas
+
+          Use GitHub Markdown. Be direct and specific. If the diff looks good, say so briefly."""
+
+          payload = {
+              "model": "claude-sonnet-4-6",
+              "max_tokens": 2048,
+              "system": system_prompt,
+              "messages": [{"role": "user", "content": user_content}]
+          }
+          pathlib.Path("/tmp/claude_request.json").write_text(json.dumps(payload))
+          PYEOF
+
+          HTTP_STATUS=$(curl -s -o /tmp/claude_response.json -w "%{http_code}" \
+            --max-time 120 \
+            -X POST https://api.anthropic.com/v1/messages \
+            -H "x-api-key: $ANTHROPIC_API_KEY" \
+            -H "anthropic-version: 2023-06-01" \
+            -H "content-type: application/json" \
+            -d @/tmp/claude_request.json)
+
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "Claude API returned HTTP $HTTP_STATUS"
+            cat /tmp/claude_response.json
+            exit 1
+          fi
+
+          # Extract the text content from the response
+          python3 - <<PYEOF2
+          import json, pathlib
+          resp = json.loads(pathlib.Path("/tmp/claude_response.json").read_text())
+          review_text = resp["content"][0]["text"]
+          pathlib.Path("/tmp/review.md").write_text(review_text)
+          print("Review extracted successfully.")
+          PYEOF2
+
+      - name: Post review comment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Prepend a header to the review
+          {
+            echo "## AI Code Review (claude-sonnet-4-6)"
+            echo ""
+            echo "> Automated review of the diff. Not a substitute for human review."
+            echo ""
+            cat /tmp/review.md
+            echo ""
+            echo "---"
+            echo "_Triggered by commit \`${{ github.event.pull_request.head.sha }}\`_"
+          } > /tmp/comment.md
+
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --body-file /tmp/comment.md

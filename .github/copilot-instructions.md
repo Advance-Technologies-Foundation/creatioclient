@@ -1,221 +1,248 @@
-# GitHub Copilot Custom Instructions for creatioclient Project
+# GitHub Copilot Custom Instructions for creatioclient
 
-## Project Context
-This is the creatioclient project - a .NET 8 client library for Creatio (formerly bpm'online) REST API. The project includes support for HTTP requests, file uploads, authentication, and WebSocket communication.
+## Project Identity
+
+**creatioclient** is a **.NET Standard 2.0** library (NuGet ID: `creatio.client`, assembly name:
+`Creatio.Client`) published by Advance Technologies Foundation. It is a thin HTTP/WebSocket client
+for integrating .NET applications with the [Creatio](https://www.creatio.com/) CRM/BPM platform.
+
+- NuGet: https://www.nuget.org/packages/creatio.client
+- Repo: https://github.com/Advance-Technologies-Foundation/creatioclient
+- Namespace root: `Creatio.Client`
+- Target: `netstandard2.0` (must stay compatible — no `net8`-only APIs in library code)
+
+---
+
+## Architecture in One Screen
+
+```
+ICreatioClient (interface)
+  └── CreatioClient (implementation)
+        ├── Auth: Cookie (.ASPXAUTH + BPMCSRF) | OAuth bearer | NTLM
+        ├── HTTP:  HttpWebRequest (GET, ping, legacy upload)
+        │          HttpClient     (POST, DELETE, chunked upload)
+        ├── Retry: Retry<T>() with RetryPolicy.Simple | Progressive
+        └── WS:   WsListenerSignalR   (isNetCore=true)  ← SignalR protocol
+                  WsListenerNetFramework (isNetCore=false) ← raw WS
+
+Dto/
+  FileUploadInfo         ← attachment upload metadata
+  FileUploadResponseDto  ← upload chunk response
+  Header / WsMessage     ← real-time message types
+  NegotiateResponse      ← SignalR negotiate
+  SignalRWrapper         ← SignalR hub envelope
+  TokenResponse          ← OAuth token
+```
+
+---
+
+## Coding Conventions — Always Follow These
+
+### Naming
+- Types, methods, properties: `PascalCase`
+- Private fields: `_camelCase` (underscore prefix)
+- Locals and parameters: `camelCase`
+- Constants (private): `PascalCase` — e.g., `WorkspaceId`, `authCookieName`
+
+### Region Structure (maintain in all files)
+```
+#region Constants: Private
+#region Fields: Private
+#region Properties: Private / Internal / Public
+#region Events: Public
+#region Constructors: Private / Public
+#region Methods: Private / Protected / Public
+```
+
+### XML Documentation
+All `public` and `interface` members need `<summary>`, `<param>`, and `<returns>` XML doc
+comments. Follow the existing style in `ICreatioClient.cs`.
+
+### Auth — always check OAuth first
+```csharp
+if (!string.IsNullOrEmpty(_oauthToken)) {
+    // Bearer header path
+} else {
+    // Cookie + BPMCSRF path
+}
+```
+
+### CSRF protection
+Every state-changing request must call `AddCsrfToken(request)` or add the `BPMCSRF` header
+from the cookie container. Never skip this.
+
+### HttpWebRequest construction
+Always use `WebRequest.CreateHttp(url)`, never `WebRequest.Create(url)`.
+`WebRequest.Create` returns `FileWebRequest` for some localhost URLs on macOS/Linux, causing
+`InvalidCastException`.
+
+### SSL validation
+Respect `_useUntrustedSsl` in every new `HttpWebRequest` or `HttpClientHandler`:
+```csharp
+if (_useUntrustedSsl) {
+    request.ServerCertificateValidationCallback = (msg, cert, chain, errors) => true;
+}
+```
+
+### Return types
+All HTTP methods return `string` (raw JSON). Do NOT parse or wrap the response into typed
+objects in the library — callers own that. This is an intentional design boundary.
+
+### Retry
+Wrap idempotent operations in `Retry<T>()`:
+```csharp
+return Retry<string>(() => { /* operation */ }, retryCount, delaySec, _retryPolicy);
+```
+
+### Input validation
+For public methods that accept file/entity parameters, validate eagerly with null checks
+and throw `ArgumentNullException`, `ArgumentException`, or `FileNotFoundException`.
+See `ValidateUploadInfo()` for the pattern.
+
+### No async in the synchronous API surface
+Only `UploadFileAsync`, `UploadAttachmentAsync`, and `UploadStaticFileAsync` are genuinely
+async. All other public methods are synchronous — they may call `.Result` or
+`.GetAwaiter().GetResult()` internally. This is intentional for cross-framework compatibility.
+
+---
+
+## URL Patterns
+
+| Purpose | Pattern |
+|---------|---------|
+| Configuration service | `{AppUrl}/0/rest/{serviceName}/{methodName}` |
+| Login | `{AppUrl}/ServiceModel/AuthService.svc/Login` |
+| Ping | `{AppUrl}/0/ping` |
+| NTLM login | `{AppUrl}/Login/NuiLogin.aspx?ntlmlogin` |
+| File upload (FileApiService) | `{AppUrl}/0/rest/FileApiService/UploadFile` |
+| File download | `{AppUrl}/0/rest/FileService/Download/{schemaName}/{recordId}` |
+| SignalR negotiate | `{AppUrl}/msg/negotiate?negotiateVersion=1` |
+| SignalR WebSocket | `wss://{host}/msg?id={connectionToken}` |
+| Legacy WS | `wss://{host}/0/Nui/ViewModule.aspx.ashx` |
+
+`AppUrl` always has trailing slash stripped (`NormalizeUrl`).
+
+---
+
+## Known Bugs and Pitfalls — Don't Repeat These
+
+| Location | Issue |
+|----------|-------|
+| `UploadStaticFileAsync` | URL concatenation bug: `&` is missing before `folderName=` |
+| `HttpClient` per-call | New handler created on every call — fine for correctness, risky at high concurrency |
+| WS buffer | Fixed 8 MB buffer; messages larger than this will truncate silently |
+| `ExecuteDeleteRequest` | Exists on `CreatioClient` but not declared on `ICreatioClient` |
+| `UploadFile_original` | Dead code — do not use or extend it |
+| `_useUntrustedSsl` | Defaults to `true` — do not forget to opt out for production |
+
+---
+
+## Testing Conventions
+
+There are currently **no tests** in the repo. When adding tests:
+- Place them in a new project `creatioclient.Tests/` targeting `net8.0`
+- Use **NUnit 4.x** with **FluentAssertions**
+- Name pattern: `MethodName_Scenario_ExpectedResult`
+- Use AAA layout with `// Arrange`, `// Act`, `// Assert` comments
+- Abstract HTTP calls behind `ICreatioClient` for mockability
+
+```csharp
+[Test]
+[Description("Verifies that NormalizeUrl strips a trailing slash")]
+public void NormalizeUrl_WithTrailingSlash_ReturnsUrlWithoutSlash()
+{
+    // Arrange
+    string input = "https://example.creatio.com/";
+
+    // Act — call via reflection or a test subclass if needed
+    string result = /* ... */;
+
+    // Assert
+    result.Should().Be("https://example.creatio.com");
+}
+```
+
+---
+
+## Release Process (for AI-assisted `/release`)
+
+1. Check `git describe --tags --abbrev=0` for current tag.
+2. Increment patch: `1.0.34` → `1.0.35`.
+3. Create and push tag: `git tag 1.0.35 && git push origin 1.0.35`.
+4. GitHub Actions `release.yml` triggers: build → pack → publish to NuGet with
+   `/p:Version=1.0.35`.
+5. The `.csproj` has no hardcoded version — the tag is the single source of truth.
+
+Required GitHub secret: `CREATIOCLIENT_NUGET_API_KEY`.
+
+---
 
 ## Available Commands
 
-### `/release` - Release Management
-Automates version management and release creation for NuGet publishing.
+### `/release` — Release Management
 
-**Usage:** `/release` followed by release type or specific instructions
-- Semantic versioning support (X.Y.Z or X.Y.Z.W format)
-- Automated GitHub release creation
-- Integration with CI/CD pipelines for NuGet package publishing
-- Cross-platform support (macOS, Windows, Linux)
+Automates version bump and NuGet publish. See `.github/prompts/release.prompt.md` for the
+full step-by-step script.
 
-**Key Features:**
-- **GitHub CLI Integration**: Auto-checks and installs `gh` CLI if missing
-- **Automatic Version Increment**: Increments build number or adds build component
-- **Project File Update**: Updates AssemblyVersion in creatioclient.csproj
-- **Git Tag Management**: Creates and pushes release tags
-- **GitHub Release Creation**: Publishes releases with automated notes
-- **CI/CD Automation**: Triggers NuGet publishing workflow automatically
+**Usage examples:**
+- `/release` — interactive wizard
+- `/release publish 1.0.35` — create a specific version
 
-**Version Format:**
-- Uses semantic versioning: X.Y.Z (e.g., 1.0.30 → 1.0.31)
-- Increments patch version (Z) by 1
-- First release starts at `1.0.1`
+**Automated steps:**
+1. Verify / install `gh` CLI
+2. Fetch latest tag
+3. Calculate next version
+4. Create + push git tag
+5. Create GitHub Release (triggers NuGet publish via `release.yml`)
 
-**Usage Examples:**
-- `/release` - Start the release wizard
-- `/release what should be the next version?` - Interactive version discussion
-- `/release publish 1.0.31` - Create specific version release
+---
 
-**Automated Steps:**
-1. Check and auto-install GitHub CLI (if needed)
-2. Fetch latest tag from repository
-3. Calculate next version number
-4. Update AssemblyVersion in creatioclient/creatioclient.csproj
-5. Create git tag and push to repository
-6. Create GitHub release using gh CLI
-7. Trigger CI/CD workflow for NuGet publishing
+## Project Files Quick Reference
 
-**What Happens After Release:**
-- GitHub Actions workflow `.github/workflows/release-to-nuget.yml` automatically:
-  - Extracts version from release tag
-  - Runs unit tests (NUnit)
-  - Builds creatioclient package in Release configuration
-  - Packs NuGet package
-  - Publishes to NuGet.org (api.nuget.org)
-- Package becomes available immediately: https://www.nuget.org/packages/creatio.client/
+| File | Role |
+|------|------|
+| `creatioclient/CreatioClient.cs` | All public API implementation |
+| `creatioclient/ICreatioClient.cs` | Public interface — primary contract |
+| `creatioclient/ATFWebRequestExtensions.cs` | `HttpWebRequest` helpers |
+| `creatioclient/RetryPolicy.cs` | Retry enum |
+| `creatioclient/IWsListener.cs` | WS listener contract |
+| `creatioclient/WsListenerSignalR.cs` | Modern WS listener |
+| `creatioclient/WsListenerNetFramework.cs` | Legacy WS listener |
+| `creatioclient/Dto/*.cs` | Transfer objects |
+| `creatioclient.example/Program.cs` | Usage examples |
+| `.github/workflows/ci.yml` | Cross-platform build CI |
+| `.github/workflows/release.yml` | Tag-driven NuGet release |
 
-## Development Guidelines
+---
 
-### Project Structure
-```
-creatioclient/
-  creatioclient/
-    creatioclient.csproj          # Main project file
-    CreatioClient.cs              # Primary client class
-    ICreatioClient.cs             # Client interface
-    Dto/                          # Data transfer objects
-  creatioclient.example/          # Example usage
-```
+## Dependencies
 
-### Key Technologies
-- **.NET 8.0** - Target framework
-- **NUnit 4.4.0** - Unit testing framework
-- **FluentAssertions** - Assertion library
-- **System.IO.Abstractions** - File system abstraction
-- **Newtonsoft.Json** - JSON serialization
-- **HTTP Client** - REST API communication
-- **WebSocket** - Real-time communication support (SignalR)
+| Package | Version | Used for |
+|---------|---------|---------|
+| `Newtonsoft.Json` | 13.0.3 | All JSON serialisation |
 
-### Coding Standards
+No other runtime dependencies. Test projects may add NUnit, FluentAssertions, etc.
 
-#### Version Management
-- Use semantic versioning: `X.Y.Z` or `X.Y.Z.W` format
-- AssemblyVersion updated via git tag during release
-- Version defined in `creatioclient/creatioclient.csproj`
-- Default version for local development: Last released version (e.g., 1.0.30)
+---
 
-#### File Organization
-- Source code in `creatioclient/` directory
-- Data Transfer Objects in `creatioclient/Dto/`
-- Example implementations in `creatioclient.example/`
-- Tests will be configured separately (currently uses NUnit framework)
+## Error Handling Quick Reference
 
-#### Code Style
-- Microsoft C# naming conventions
-- Follow existing code patterns in `CreatioClient.cs`
-- Use `ICreatioClient` interface for public APIs
-- Proper XML documentation comments for public members
+| Symptom | Likely cause |
+|---------|-------------|
+| `InvalidCastException` on WebRequest | Used `WebRequest.Create` instead of `WebRequest.CreateHttp` |
+| `UnauthorizedAccessException "Unauthorized ..."` | Bad credentials or wrong `AppUrl` |
+| `BPMCSRF` rejection (403) | CSRF token not added to request headers |
+| Login succeeds but requests fail | Cookie not propagating — check `AuthCookie` is not null |
+| WebSocket disconnects constantly | `CancellationToken.None` passed; check host reachability |
+| Upload `dto.Success = false` | Wrong `EntitySchemaName`, `ColumnName`, or `ParentColumnValue` |
 
-### Testing
-- Tests use **NUnit 4.4.0** framework
-- FluentAssertions for readable assertions
-- File system operations use abstraction layer
-- Example test structure (when tests are added):
-  ```csharp
-  [Test]
-  [Description("Describes what the test validates")]
-  public void TestMethod_Scenario_ExpectedResult()
-  {
-    // Arrange
-    var client = new CreatioClient(baseUri);
-    
-    // Act
-    var result = await client.SomeMethodAsync();
-    
-    // Assert
-    result.Should().NotBeNull("because the method should return a value");
-  }
-  ```
-
-### Dependencies
-- Use NuGet package references in `.csproj`
-- No external scripts or PowerShell for building
-- `dotnet` CLI for all build operations
-
-### Package Publishing
-- NuGet Package ID: `creatio.client`
-- Package published to: https://www.nuget.org/packages/creatio.client/
-- Requires secret: `CREATIOCLIENT_NUGET_API_KEY` (GitHub secret)
-- Published automatically via GitHub Actions on release
-
-## CI/CD Integration
-
-### Workflows
-- `.github/workflows/release-to-nuget.yml` - Publishes releases to NuGet.org
-  - Triggered: On GitHub release published
-  - Steps: Test → Build → Pack → Publish
-
-### Secrets Required
-- `CREATIOCLIENT_NUGET_API_KEY` - NuGet API key for publishing
-
-### GitHub Releases
-- Created automatically via `/release` command or manual git tag
-- Includes version number in title and notes
-- Triggers NuGet publishing workflow
-
-## Common Workflows
-
-### Releasing a New Version
-1. Run `/release` command in GitHub Copilot chat
-2. Follow the prompts to confirm version bump
-3. GitHub Actions automatically publishes to NuGet
-4. Package available at: https://www.nuget.org/packages/creatio.client/
-
-### Installing Latest Release
-```bash
-dotnet add package creatio.client
-```
-
-Or specify version:
-```bash
-dotnet add package creatio.client --version 1.0.30.1
-```
-
-### Verifying Release
-- GitHub Releases: https://github.com/Advance-Technologies-Foundation/creatioclient/releases
-- GitHub Actions: https://github.com/Advance-Technologies-Foundation/creatioclient/actions
-- NuGet Package: https://www.nuget.org/packages/creatio.client/
+---
 
 ## Communication Style
 
-### When Providing Release Guidance
-- Confirm current version and calculate next version clearly
-- Show the commands that will be executed
-- Explain what happens in CI/CD pipeline
-- Provide links for monitoring progress
-- Offer help with troubleshooting if needed
-
-### When Discussing Development
-- Reference project structure clearly
-- Use Microsoft C# naming conventions
-- Suggest tests following NUnit patterns
-- Keep explanations practical and example-driven
-
-## Error Handling
-
-### Common Issues and Solutions
-
-| Issue | Cause | Solution |
-|-------|-------|----------|
-| "gh: command not found" | GitHub CLI not installed | `/release` command will auto-install it |
-| "Not authenticated" | GitHub CLI not logged in | Run `gh auth login` in terminal |
-| "Tag already exists" | Version number already released | Use different version or check existing tags |
-| "Build failed" | Project configuration issue | Run `dotnet build creatioclient/creatioclient.csproj -c Release` locally |
-| "NuGet publish failed" | Missing API key secret | Verify `CREATIOCLIENT_NUGET_API_KEY` in repo settings |
-
-## Additional Resources
-
-- **creatioclient Repository**: https://github.com/Advance-Technologies-Foundation/creatioclient
-- **creatioclient NuGet Package**: https://www.nuget.org/packages/creatio.client/
-- **Creatio Official Documentation**: https://academy.creatio.com/
-- **GitHub CLI Documentation**: https://cli.github.com/manual
-- **.NET 8 Documentation**: https://learn.microsoft.com/en-us/dotnet/
-
-## Release Best Practices
-
-1. **Before Release**:
-   - Ensure all PRs merged to main branch
-   - Verify unit tests pass locally
-   - Update any relevant documentation
-
-2. **During Release** (via `/release` command):
-   - Confirm version number is correct
-   - Review changelog if available
-   - Proceed with release confirmation
-
-3. **After Release**:
-   - Verify package published to NuGet
-   - Test installation: `dotnet add package creatio.client`
-   - Announce release to team/community
-   - Update documentation with new features/fixes
-
-4. **Troubleshooting**:
-   - Monitor GitHub Actions workflow: https://github.com/Advance-Technologies-Foundation/creatioclient/actions
-   - Check NuGet package page for processing time
-   - If issues occur, refer to error handling section above
+When generating code for this project:
+- Match existing `#region` structure
+- Use `var` sparingly — prefer explicit types for fields and method signatures
+- Do not add `using` directives not already present unless strictly necessary
+- Prefer `string.IsNullOrEmpty` over null-checks on string parameters
+- Do not introduce LINQ where a simple `foreach` is clearer (existing code mixes both — match context)
