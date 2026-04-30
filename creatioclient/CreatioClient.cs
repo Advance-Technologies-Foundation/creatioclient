@@ -228,7 +228,9 @@ namespace Creatio.Client
 		}
 
 		private HttpWebRequest CreateRequest(string url, string method = "POST") {
-			HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
+			// WebRequest.CreateHttp always returns HttpWebRequest; WebRequest.Create can return
+			// FileWebRequest on macOS/Linux for some localhost URLs and trips an InvalidCastException.
+			HttpWebRequest request = WebRequest.CreateHttp(url);
 			if (_useUntrustedSsl) {
 				request.ServerCertificateValidationCallback = (message, cert, chain, errors) => true;
 			}
