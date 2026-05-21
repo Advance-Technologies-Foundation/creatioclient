@@ -411,7 +411,30 @@ namespace Creatio.Client
 			_isNetCore = isNetCore;
 			_useUntrustedSsl = useUntrustedSsl;
 		}
-		
+
+		/// <summary>
+		/// Initializes a new instance of the <see cref="CreatioClient"/> class using an existing OAuth bearer token.
+		/// No Login call will be made; the token is sent as Authorization: Bearer &lt;token&gt; on every request.
+		/// </summary>
+		/// <param name="appUrl">The URL of the Creatio application.</param>
+		/// <param name="bearerToken">The bearer token. May be passed with or without the leading "Bearer " prefix; the prefix is stripped.</param>
+		/// <param name="isNetCore">Optional. A boolean value indicating whether the client is running on .NET Core. Default is false.</param>
+		public CreatioClient(string appUrl, string bearerToken, bool isNetCore = false){
+			AppUrl = appUrl;
+			_isNetCore = isNetCore;
+			_oauthToken = StripBearerPrefix(bearerToken);
+		}
+
+		private static string StripBearerPrefix(string token){
+			if (string.IsNullOrWhiteSpace(token)) {
+				return token;
+			}
+			const string prefix = "Bearer ";
+			return token.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+				? token.Substring(prefix.Length).Trim()
+				: token.Trim();
+		}
+
 		#endregion
 
 		#region Methods: Public
