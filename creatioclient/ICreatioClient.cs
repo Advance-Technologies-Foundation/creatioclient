@@ -62,6 +62,18 @@ namespace Creatio.Client
 		string ExecutePostRequest(string url, string requestData, int requestTimeout = 100_000, int retryCount = 1, int delaySec = 1);
 
 		/// <summary>
+		/// Executes a PATCH request to the specified URL. Used for OData v4 partial updates,
+		/// where only the supplied fields are changed on the addressed record.
+		/// </summary>
+		/// <param name="url">The URL to send the PATCH request to (typically an OData entity addressed by key, e.g. <c>odata/Contact(&lt;guid&gt;)</c>).</param>
+		/// <param name="requestData">The JSON body containing the field/value pairs to change.</param>
+		/// <param name="requestTimeout">Optional. The timeout for the request in milliseconds. Default is 100000.</param>
+		/// <param name="retryCount">Optional. The number of times to retry the request in case of failure. Default is 1.</param>
+		/// <param name="delaySec">Optional. The delay in seconds before retrying the request. Default is 1.</param>
+		/// <returns>The response from the PATCH request as a string (empty for the typical 204 No Content).</returns>
+		string ExecutePatchRequest(string url, string requestData, int requestTimeout = 100_000, int retryCount = 1, int delaySec = 1);
+
+		/// <summary>
 		/// Logs in to the Creatio application.
 		/// </summary>
 		void Login();

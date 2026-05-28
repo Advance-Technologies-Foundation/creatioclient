@@ -45,6 +45,11 @@ To execute POST request:
 string data = client.ExecutePostRequest(<Url>, <RequestData>);
 ```
 
+To execute PATCH request (OData v4 partial update of a single record):
+```
+string data = client.ExecutePatchRequest(<Url>, <RequestData>);
+```
+
 Subscribe to WebSocket messages:
 ```csharp
 

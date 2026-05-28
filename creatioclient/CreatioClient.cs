@@ -525,6 +525,36 @@ namespace Creatio.Client
 				}, retryCount, delaySec, _retryPolicy);
 			}
 
+		public string ExecutePatchRequest(string url, string requestData, int requestTimeout = 10000, int retryCount = 1, int delaySec = 1){
+			return Retry<string>(() => {
+				using (var handler = CreateCreatioHandler()) {
+					// netstandard2.0 has no HttpMethod.Patch; the string ctor is the portable form.
+					HttpRequestMessage BuildRequest(HttpClient client) {
+						HttpRequestMessage message = new HttpRequestMessage(new HttpMethod("PATCH"), url) {
+							Content = new StringContent(requestData ?? string.Empty, Encoding.UTF8, "application/json")
+						};
+						client.Timeout = TimeSpan.FromMilliseconds(requestTimeout);
+						return message;
+					}
+
+					if (_oauthToken != null) {
+						using (HttpClient client = new HttpClient(handler)) {
+							client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _oauthToken);
+							HttpResponseMessage response = client.SendAsync(BuildRequest(client)).Result;
+							return response.Content.ReadAsStringAsync().Result;
+						}
+					}
+
+					handler.CookieContainer = AuthCookie;
+					using (HttpClient client = new HttpClient(handler)) {
+						AddCsrfToken(client);
+						HttpResponseMessage response = client.SendAsync(BuildRequest(client)).Result;
+						return response.Content.ReadAsStringAsync().Result;
+					}
+				}
+			}, retryCount, delaySec, _retryPolicy);
+		}
+
 		static T Retry<T>(Func<T> func, int maxRetries, int delaySeconds, RetryPolicy retryPolicy = RetryPolicy.Simple) {
 			int retries = 0;
 			int multiplicator = 1; 
