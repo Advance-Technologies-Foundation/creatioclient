@@ -461,6 +461,14 @@ namespace Creatio.Client
 			request.SaveToFile(filePath);
 		}
 
+		public void DownloadFileByGet(string url, string filePath, int requestTimeout = 100000) {
+			Retry<bool>(() => {
+				HttpWebRequest request = CreateCreatioRequest(url, null, requestTimeout, "GET");
+				request.SaveToFile(filePath);
+				return true;
+			}, _retryCount, _delaySec, _retryPolicy);
+		}
+
 		public string ExecuteGetRequest(string url, int requestTimeout = 100000, int retryCount = 1, int delaySec = 1) {
 			return Retry<string>(() => {
 				HttpWebRequest request = CreateCreatioRequest(url, null, requestTimeout);
