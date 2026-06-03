@@ -40,6 +40,16 @@ namespace Creatio.Client
 		void DownloadFile(string url, string filePath, string requestData, int requestTimeout = 100_000);
 
 		/// <summary>
+		/// Downloads a file via an HTTP GET request to the specified URL and saves it to disk,
+		/// preserving binary content. Use this for GET-only file endpoints (e.g. OData media links
+		/// or [WebGet] services) where <see cref="DownloadFile"/> (which issues a POST) is unsuitable.
+		/// </summary>
+		/// <param name="url">The absolute URL of the file to download.</param>
+		/// <param name="filePath">The path where the downloaded file should be saved.</param>
+		/// <param name="requestTimeout">Optional. The timeout for the request in milliseconds. Default is 100000.</param>
+		void DownloadFileByGet(string url, string filePath, int requestTimeout = 100_000);
+
+		/// <summary>
 		/// Executes a GET request to the specified URL.
 		/// </summary>
 		/// <param name="url">The URL to send the GET request to.</param>
