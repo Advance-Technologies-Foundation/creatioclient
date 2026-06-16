@@ -35,7 +35,7 @@ namespace Creatio.Client
 		private readonly bool _useUntrustedSsl = true;
 		private CookieContainer _authCookie;
 		private string _oauthToken;
-		private int _retryCount = 1;
+		private int _maxAttempts = 1;
 		private int _delaySec = 1;
 		private RetryPolicy _retryPolicy = RetryPolicy.Simple;
 		private readonly ICredentials _credentials;
@@ -453,7 +453,7 @@ namespace Creatio.Client
 			string requestData,
 			int requestTimeout = 100000){
 			string executeUrl = CreateConfigurationServiceUrl(serviceName, serviceMethod);
-			return ExecutePostRequest(executeUrl, requestData, requestTimeout, _retryCount, _delaySec);
+			return ExecutePostRequest(executeUrl, requestData, requestTimeout, _maxAttempts, _delaySec);
 		}
 
 		public void DownloadFile(string url, string filePath, string requestData, int requestTimeout = 100000){
@@ -466,18 +466,18 @@ namespace Creatio.Client
 				HttpWebRequest request = CreateCreatioRequest(url, null, requestTimeout, "GET");
 				request.SaveToFile(filePath);
 				return true;
-			}, _retryCount, _delaySec, _retryPolicy);
+			}, _maxAttempts, _delaySec, _retryPolicy);
 		}
 
-		public string ExecuteGetRequest(string url, int requestTimeout = 100000, int retryCount = 1, int delaySec = 1) {
+		public string ExecuteGetRequest(string url, int requestTimeout = 100000, int maxAttempts = 1, int delaySec = 1) {
 			return Retry<string>(() => {
 				HttpWebRequest request = CreateCreatioRequest(url, null, requestTimeout);
 				request.Method = "GET";
 				return request.GetServiceResponse();
-			}, retryCount, delaySec, _retryPolicy);
+			}, maxAttempts, delaySec, _retryPolicy);
 		}
 
-		public string ExecutePostRequest(string url, string requestData, int requestTimeout = 10000, int retryCount = 1, int delaySec = 1){
+		public string ExecutePostRequest(string url, string requestData, int requestTimeout = 10000, int maxAttempts = 1, int delaySec = 1){
 			return Retry<string>(() => {
 				using( var handler = CreateCreatioHandler()) {
 					if (_oauthToken != null) {
@@ -500,10 +500,10 @@ namespace Creatio.Client
 						return content;
 					}
 				}
-			}, retryCount, delaySec, _retryPolicy);
+			}, maxAttempts, delaySec, _retryPolicy);
 		}
 
-			public string ExecuteDeleteRequest(string url, string requestData, int requestTimeout = 10000, int retryCount = 1, int delaySec = 1){
+			public string ExecuteDeleteRequest(string url, string requestData, int requestTimeout = 10000, int maxAttempts = 1, int delaySec = 1){
 				return Retry<string>(() => {
 					using (var handler = CreateCreatioHandler()) {
 						HttpRequestMessage BuildRequest(HttpClient client) {
@@ -530,10 +530,10 @@ namespace Creatio.Client
 							return response.Content.ReadAsStringAsync().Result;
 						}
 					}
-				}, retryCount, delaySec, _retryPolicy);
+				}, maxAttempts, delaySec, _retryPolicy);
 			}
 
-		public string ExecutePatchRequest(string url, string requestData, int requestTimeout = 10000, int retryCount = 1, int delaySec = 1){
+		public string ExecutePatchRequest(string url, string requestData, int requestTimeout = 10000, int maxAttempts = 1, int delaySec = 1){
 			return Retry<string>(() => {
 				using (var handler = CreateCreatioHandler()) {
 					// netstandard2.0 has no HttpMethod.Patch; the string ctor is the portable form.
@@ -560,21 +560,22 @@ namespace Creatio.Client
 						return response.Content.ReadAsStringAsync().Result;
 					}
 				}
-			}, retryCount, delaySec, _retryPolicy);
+			}, maxAttempts, delaySec, _retryPolicy);
 		}
 
-		static T Retry<T>(Func<T> func, int maxRetries, int delaySeconds, RetryPolicy retryPolicy = RetryPolicy.Simple) {
-			int retries = 0;
+		static T Retry<T>(Func<T> func, int maxAttempts, int delaySeconds, RetryPolicy retryPolicy = RetryPolicy.Simple) {
+			if (maxAttempts < 1) maxAttempts = 1;   // a 0/negative count must never silently skip the request
+			int attempts = 0;
 			int multiplicator = 1; 
-			while (retries < maxRetries) {
+			while (attempts < maxAttempts) {
 				try {
 					return func();
 				} catch (Exception ex) {
-					retries++;
+					attempts++;
 					if (retryPolicy == RetryPolicy.Progressive) {
 						multiplicator++;
 					} 
-					if (retries < maxRetries) {
+					if (attempts < maxAttempts) {
 						Thread.Sleep(delaySeconds * 1000 * multiplicator);
 					} else {
 						throw;					}
@@ -913,8 +914,8 @@ namespace Creatio.Client
 		}
 
 		/// <inheritdoc/>
-		public void SetRetryPolicy(int retryCount, int delaySec, RetryPolicy retryPolicy) {
-			_retryCount = retryCount;
+		public void SetRetryPolicy(int maxAttempts, int delaySec, RetryPolicy retryPolicy) {
+			_maxAttempts = maxAttempts;
 			_delaySec = delaySec;
 			_retryPolicy = retryPolicy;
 		}
@@ -943,7 +944,7 @@ namespace Creatio.Client
 							var msg = CreateUploadRequestMessage(uri, buffer, totalBytesRead - bytesRead,
 								currentChunkSize, fileStream.Length, fileName, mime);
 							return client.SendAsync(msg).Result;
-						}, _retryCount, _delaySec, _retryPolicy);
+						}, _maxAttempts, _delaySec, _retryPolicy);
 						string resultString = await response.Content.ReadAsStringAsync();
 						returnResult = resultString;
 						response.EnsureSuccessStatusCode();
@@ -969,7 +970,7 @@ namespace Creatio.Client
 			return Retry<bool>(() => {
 				request.SaveToFile(filePath);
 				return true;
-			}, _retryCount, _delaySec, _retryPolicy);
+			}, _maxAttempts, _delaySec, _retryPolicy);
 		}
 
 		#endregion

@@ -105,14 +105,17 @@ set to `false` when connecting to trusted production endpoints.
 
 ### Retry Policy
 
-`SetRetryPolicy(retryCount, delaySec, RetryPolicy)` configures instance-level retries for
+`SetRetryPolicy(maxAttempts, delaySec, RetryPolicy)` configures instance-level retry behaviour for
 `ExecutePostRequest`, `ExecuteGetRequest`, `ExecuteDeleteRequest`, and the chunk loop inside
 `UploadAttachmentAsync`.
 
+- The count is a **total attempt count**, not a number of retries: `maxAttempts = 1` makes a
+  single attempt with no retry. Values below 1 are clamped to 1 (a `0` never silently skips the
+  request).
 - `RetryPolicy.Simple` — fixed delay of `delaySec` seconds between attempts
 - `RetryPolicy.Progressive` — delay multiplied by attempt number (1×, 2×, 3×, …)
 
-Default: 1 retry, 1-second delay.
+Default: 1 attempt (no retries), 1-second delay.
 
 ### WebSocket Listeners
 
