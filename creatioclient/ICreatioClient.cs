@@ -54,10 +54,10 @@ namespace Creatio.Client
 		/// </summary>
 		/// <param name="url">The URL to send the GET request to.</param>
 		/// <param name="requestTimeout">Optional. The timeout for the request in milliseconds. Default is 100000.</param>
-		/// <param name="retryCount">Optional. The number of times to retry the request in case of failure. Default is 1.</param>
+		/// <param name="maxAttempts">Optional. Total number of attempts to make (minimum 1; values below 1 are treated as 1). Default is 1 (a single attempt, no retries).</param>
 		/// <param name="delaySec">Optional. The delay in seconds before retrying the request. Default is 1.</param>
 		/// <returns>The response from the GET request as a string.</returns>
-		string ExecuteGetRequest(string url, int requestTimeout = 100_000, int retryCount = 1, int delaySec = 1);
+		string ExecuteGetRequest(string url, int requestTimeout = 100_000, int maxAttempts = 1, int delaySec = 1);
 
 		
 		/// <summary>
@@ -66,10 +66,10 @@ namespace Creatio.Client
 		/// <param name="url">The URL to send the POST request to.</param>
 		/// <param name="requestData">The data to send with the request.</param>
 		/// <param name="requestTimeout">Optional. The timeout for the request in milliseconds. Default is 100000.</param>
-		/// <param name="retryCount">Optional. The number of times to retry the request in case of failure. Default is 1.</param>
+		/// <param name="maxAttempts">Optional. Total number of attempts to make (minimum 1; values below 1 are treated as 1). Default is 1 (a single attempt, no retries).</param>
 		/// <param name="delaySec">Optional. The delay in seconds before retrying the request. Default is 1.</param>
 		/// <returns>The response from the POST request as a string.</returns>
-		string ExecutePostRequest(string url, string requestData, int requestTimeout = 100_000, int retryCount = 1, int delaySec = 1);
+		string ExecutePostRequest(string url, string requestData, int requestTimeout = 100_000, int maxAttempts = 1, int delaySec = 1);
 
 		/// <summary>
 		/// Executes a PATCH request to the specified URL. Used for OData v4 partial updates,
@@ -78,10 +78,10 @@ namespace Creatio.Client
 		/// <param name="url">The URL to send the PATCH request to (typically an OData entity addressed by key, e.g. <c>odata/Contact(&lt;guid&gt;)</c>).</param>
 		/// <param name="requestData">The JSON body containing the field/value pairs to change.</param>
 		/// <param name="requestTimeout">Optional. The timeout for the request in milliseconds. Default is 100000.</param>
-		/// <param name="retryCount">Optional. The number of times to retry the request in case of failure. Default is 1.</param>
+		/// <param name="maxAttempts">Optional. Total number of attempts to make (minimum 1; values below 1 are treated as 1). Default is 1 (a single attempt, no retries).</param>
 		/// <param name="delaySec">Optional. The delay in seconds before retrying the request. Default is 1.</param>
 		/// <returns>The response from the PATCH request as a string (empty for the typical 204 No Content).</returns>
-		string ExecutePatchRequest(string url, string requestData, int requestTimeout = 100_000, int retryCount = 1, int delaySec = 1);
+		string ExecutePatchRequest(string url, string requestData, int requestTimeout = 100_000, int maxAttempts = 1, int delaySec = 1);
 
 		/// <summary>
 		/// Logs in to the Creatio application.
@@ -118,10 +118,10 @@ namespace Creatio.Client
 		/// <summary>
 		/// Sets a custom retry policy for HTTP calls.
 		/// </summary>
-		/// <param name="retryCount">The number of times to retry the HTTP call in case of failure.</param>
+		/// <param name="maxAttempts">Total number of attempts to make for the HTTP call (minimum 1; values below 1 are treated as 1).</param>
 		/// <param name="delaySec">The delay in seconds before retrying the HTTP call.</param>
 		/// <param name="retryPolicy">The retry policy to use for the HTTP call. See <see cref="RetryPolicy"/>.</param>
-		void SetRetryPolicy(int retryCount, int delaySec, RetryPolicy retryPolicy);
+		void SetRetryPolicy(int maxAttempts, int delaySec, RetryPolicy retryPolicy);
 
 		/// <summary>
 		/// Uploads an attachment to a Creatio entity.
