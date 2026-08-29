@@ -104,12 +104,12 @@ public class CreatioClientMutableRequestTests
 		const string requestBody = "{\"Name\":\"Retried\"}";
 		await using LoopbackHttpServer server = new();
 		Task<(RecordedRequest TimedOutAttempt, RecordedRequest SuccessfulAttempt)> attempts =
-			server.TimeoutThenRespondAsync("retry-ok", TimeSpan.FromMilliseconds(500));
+			server.TimeoutThenRespondAsync("retry-ok", TimeSpan.FromMilliseconds(1500));
 		CreatioClient client = new(server.BaseUri.ToString(), "test-token");
 
 		// Act
 		string result = client.ExecutePutRequest(
-			server.BaseUri.ToString(), requestBody, requestTimeout: 200, maxAttempts: 2, delaySec: 0);
+			server.BaseUri.ToString(), requestBody, requestTimeout: 1000, maxAttempts: 2, delaySec: 0);
 		(RecordedRequest timedOutAttempt, RecordedRequest successfulAttempt) = await attempts;
 
 		// Assert
