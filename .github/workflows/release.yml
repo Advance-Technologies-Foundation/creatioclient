@@ -12,23 +12,66 @@ on:
         required: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
-    name: release
+  verify:
+    name: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+
+      - name: Restore
+        run: dotnet restore creatioclient.sln
+
+      - name: Build
+        run: |
+          dotnet build creatioclient.sln \
+            --configuration Release \
+            --no-restore
+
+      - name: Test
+        shell: bash
+        run: |
+          if find . -name "*.Tests.csproj" -not -path "*/bin/*" -not -path "*/obj/*" | grep -q .; then
+            dotnet test creatioclient.sln \
+              --configuration Release \
+              --no-build \
+              --verbosity normal
+          else
+            echo "No *.Tests.csproj found; skipping test step."
+          fi
+
+  release:
+    name: release
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Extract version
         id: ver
         shell: bash
+        env:
+          VERSION_INPUT: ${{ github.event.inputs.version }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            version="${{ github.event.inputs.version }}"
+            version="$VERSION_INPUT"
             tag="v$version"
           else
             tag="${GITHUB_REF_NAME}"
@@ -45,10 +88,10 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 10.0.x
 
       - name: Restore
-        run: dotnet restore creatioclient.sln
+        run: dotnet restore creatioclient/creatioclient.csproj
 
       - name: Build
         run: |
@@ -58,18 +101,6 @@ jobs:
             /p:Version=${{ steps.ver.outputs.version }} \
             /p:AssemblyVersion=${{ steps.ver.outputs.version }} \
             /p:FileVersion=${{ steps.ver.outputs.version }}
-
-      - name: Test
-        shell: bash
-        run: |
-          if find . -name "*.Tests.csproj" -not -path "*/bin/*" -not -path "*/obj/*" | grep -q .; then
-            dotnet test creatioclient.sln \
-              --configuration Release \
-              --no-build \
-              --verbosity normal
-          else
-            echo "No *.Tests.csproj found; skipping test step."
-          fi
 
       - name: Pack
         run: |
@@ -91,7 +122,7 @@ jobs:
             --skip-duplicate
 
       - name: Create or update GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: ${{ steps.ver.outputs.tag }}
