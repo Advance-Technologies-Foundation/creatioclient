@@ -104,12 +104,12 @@ public class CreatioClientMutableRequestTests
 		const string requestBody = "{\"Name\":\"Retried\"}";
 		await using LoopbackHttpServer server = new();
 		Task<(RecordedRequest TimedOutAttempt, RecordedRequest SuccessfulAttempt)> attempts =
-			server.TimeoutThenRespondAsync("retry-ok", TimeSpan.FromMilliseconds(6500));
+			server.TimeoutThenRespondAsync("retry-ok");
 		CreatioClient client = new(server.BaseUri.ToString(), "test-token");
 
 		// Act
 		string result = client.ExecutePutRequest(
-			server.BaseUri.ToString(), requestBody, requestTimeout: 5000, maxAttempts: 2, delaySec: 0);
+			server.BaseUri.ToString(), requestBody, requestTimeout: 2000, maxAttempts: 2, delaySec: 0);
 		(RecordedRequest timedOutAttempt, RecordedRequest successfulAttempt) = await attempts;
 
 		// Assert
@@ -166,13 +166,12 @@ public class CreatioClientMutableRequestTests
 		}
 
 		public async Task<(RecordedRequest TimedOutAttempt, RecordedRequest SuccessfulAttempt)> TimeoutThenRespondAsync(
-			string responseBody, TimeSpan timeoutDelay)
+			string responseBody)
 		{
 			using (TcpClient client = await _listener.AcceptTcpClientAsync().WaitAsync(TimeSpan.FromSeconds(10))) {
 				await using NetworkStream stream = client.GetStream();
 				RecordedRequest timedOutAttempt = await ReadRequestAsync(stream);
 				Task<RecordedRequest> successfulAttempt = ReceiveAndRespondAsync(responseBody);
-				await Task.Delay(timeoutDelay);
 				return (timedOutAttempt, await successfulAttempt);
 			}
 		}
