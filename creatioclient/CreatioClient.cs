@@ -533,12 +533,12 @@ namespace Creatio.Client
 				}, maxAttempts, delaySec, _retryPolicy);
 			}
 
-		public string ExecutePatchRequest(string url, string requestData, int requestTimeout = 10000, int maxAttempts = 1, int delaySec = 1){
+		private string ExecuteHttpRequest(HttpMethod method, string url, string requestData, int requestTimeout,
+			int maxAttempts, int delaySec) {
 			return Retry<string>(() => {
 				using (var handler = CreateCreatioHandler()) {
-					// netstandard2.0 has no HttpMethod.Patch; the string ctor is the portable form.
 					HttpRequestMessage BuildRequest(HttpClient client) {
-						HttpRequestMessage message = new HttpRequestMessage(new HttpMethod("PATCH"), url) {
+						HttpRequestMessage message = new HttpRequestMessage(method, url) {
 							Content = new StringContent(requestData ?? string.Empty, Encoding.UTF8, "application/json")
 						};
 						client.Timeout = TimeSpan.FromMilliseconds(requestTimeout);
@@ -563,33 +563,13 @@ namespace Creatio.Client
 			}, maxAttempts, delaySec, _retryPolicy);
 		}
 
-		public string ExecutePutRequest(string url, string requestData, int requestTimeout = 10000, int maxAttempts = 1, int delaySec = 1){
-			return Retry<string>(() => {
-				using (var handler = CreateCreatioHandler()) {
-					HttpRequestMessage BuildRequest(HttpClient client) {
-						HttpRequestMessage message = new HttpRequestMessage(HttpMethod.Put, url) {
-							Content = new StringContent(requestData ?? string.Empty, Encoding.UTF8, "application/json")
-						};
-						client.Timeout = TimeSpan.FromMilliseconds(requestTimeout);
-						return message;
-					}
+		public string ExecutePatchRequest(string url, string requestData, int requestTimeout = 10000, int maxAttempts = 1, int delaySec = 1){
+			// netstandard2.0 has no HttpMethod.Patch; the string ctor is the portable form.
+			return ExecuteHttpRequest(new HttpMethod("PATCH"), url, requestData, requestTimeout, maxAttempts, delaySec);
+		}
 
-					if (_oauthToken != null) {
-						using (HttpClient client = new HttpClient(handler)) {
-							client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _oauthToken);
-							HttpResponseMessage response = client.SendAsync(BuildRequest(client)).Result;
-							return response.Content.ReadAsStringAsync().Result;
-						}
-					}
-
-					handler.CookieContainer = AuthCookie;
-					using (HttpClient client = new HttpClient(handler)) {
-						AddCsrfToken(client);
-						HttpResponseMessage response = client.SendAsync(BuildRequest(client)).Result;
-						return response.Content.ReadAsStringAsync().Result;
-					}
-				}
-			}, maxAttempts, delaySec, _retryPolicy);
+		public string ExecutePutRequest(string url, string requestData, int requestTimeout = 100_000, int maxAttempts = 1, int delaySec = 1){
+			return ExecuteHttpRequest(HttpMethod.Put, url, requestData, requestTimeout, maxAttempts, delaySec);
 		}
 
 		static T Retry<T>(Func<T> func, int maxAttempts, int delaySeconds, RetryPolicy retryPolicy = RetryPolicy.Simple) {
