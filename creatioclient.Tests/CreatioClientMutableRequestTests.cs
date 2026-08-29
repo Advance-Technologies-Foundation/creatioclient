@@ -103,19 +103,19 @@ public class CreatioClientMutableRequestTests
 		// Arrange
 		const string requestBody = "{\"Name\":\"Retried\"}";
 		await using LoopbackHttpServer server = new();
-		Task<(RecordedRequest FailedAttempt, RecordedRequest SuccessfulAttempt)> attempts =
-			server.DropThenRespondAsync("retry-ok");
+		Task<(RecordedRequest TimedOutAttempt, RecordedRequest SuccessfulAttempt)> attempts =
+			server.TimeoutThenRespondAsync("retry-ok", TimeSpan.FromMilliseconds(500));
 		CreatioClient client = new(server.BaseUri.ToString(), "test-token");
 
 		// Act
 		string result = client.ExecutePutRequest(
-			server.BaseUri.ToString(), requestBody, requestTimeout: 2_000, maxAttempts: 2, delaySec: 0);
-		(RecordedRequest failedAttempt, RecordedRequest successfulAttempt) = await attempts;
+			server.BaseUri.ToString(), requestBody, requestTimeout: 200, maxAttempts: 2, delaySec: 0);
+		(RecordedRequest timedOutAttempt, RecordedRequest successfulAttempt) = await attempts;
 
 		// Assert
 		result.Should().Be("retry-ok", because: "the second transport attempt should succeed");
-		failedAttempt.Method.Should().Be("PUT", because: "the failed attempt must use the requested HTTP verb");
-		failedAttempt.Body.Should().Be(requestBody, because: "the first attempt must send the JSON content");
+		timedOutAttempt.Method.Should().Be("PUT", because: "the timed-out attempt must use the requested HTTP verb");
+		timedOutAttempt.Body.Should().Be(requestBody, because: "the first attempt must send the JSON content");
 		successfulAttempt.Method.Should().Be("PUT", because: "the retried request must preserve the HTTP verb");
 		successfulAttempt.Body.Should().Be(requestBody, because: "the retried request must recreate the JSON content");
 	}
@@ -135,26 +135,17 @@ public class CreatioClientMutableRequestTests
 
 	private sealed record RecordedRequest(
 		string Method,
-		string Path,
 		IReadOnlyDictionary<string, string> Headers,
 		string Body);
 
 	private sealed class LoopbackHttpServer : IAsyncDisposable
 	{
 		private readonly TcpListener _listener;
-		private bool _started;
 
 		public LoopbackHttpServer()
-			: this(0, startImmediately: true)
 		{
-		}
-
-		public LoopbackHttpServer(int port, bool startImmediately)
-		{
-			_listener = new TcpListener(IPAddress.Loopback, port);
-			if (startImmediately) {
-				Start();
-			}
+			_listener = new TcpListener(IPAddress.Loopback, 0);
+			_listener.Start();
 		}
 
 		public Uri BaseUri {
@@ -164,36 +155,25 @@ public class CreatioClientMutableRequestTests
 			}
 		}
 
-		public void Start()
-		{
-			if (_started) {
-				return;
-			}
-			_listener.Start();
-			_started = true;
-		}
-
-		public async Task<RecordedRequest> ReceiveAndRespondAsync(string responseBody, params string[] responseHeaders)
+		public async Task<RecordedRequest> ReceiveAndRespondAsync(string responseBody)
 		{
 			using TcpClient client = await _listener.AcceptTcpClientAsync()
 				.WaitAsync(TimeSpan.FromSeconds(10));
 			await using NetworkStream stream = client.GetStream();
 			RecordedRequest request = await ReadRequestAsync(stream);
-			await WriteResponseAsync(stream, responseBody, responseHeaders);
+			await WriteResponseAsync(stream, responseBody);
 			return request;
 		}
 
-		public async Task<(RecordedRequest FailedAttempt, RecordedRequest SuccessfulAttempt)> DropThenRespondAsync(
-			string responseBody)
+		public async Task<(RecordedRequest TimedOutAttempt, RecordedRequest SuccessfulAttempt)> TimeoutThenRespondAsync(
+			string responseBody, TimeSpan timeoutDelay)
 		{
 			using (TcpClient client = await _listener.AcceptTcpClientAsync().WaitAsync(TimeSpan.FromSeconds(10))) {
 				await using NetworkStream stream = client.GetStream();
-				RecordedRequest failedAttempt = await ReadRequestAsync(stream);
-				client.Client.LingerState = new LingerOption(enable: true, seconds: 0);
-				client.Close();
-
-				RecordedRequest successfulAttempt = await ReceiveAndRespondAsync(responseBody);
-				return (failedAttempt, successfulAttempt);
+				RecordedRequest timedOutAttempt = await ReadRequestAsync(stream);
+				Task<RecordedRequest> successfulAttempt = ReceiveAndRespondAsync(responseBody);
+				await Task.Delay(timeoutDelay);
+				return (timedOutAttempt, await successfulAttempt);
 			}
 		}
 
@@ -251,7 +231,6 @@ public class CreatioClientMutableRequestTests
 
 			return new RecordedRequest(
 				requestLine[0],
-				requestLine[1],
 				headers,
 				Encoding.UTF8.GetString(bodyBytes));
 		}
@@ -263,15 +242,11 @@ public class CreatioClientMutableRequestTests
 			&& bytes[^2] == '\r'
 			&& bytes[^1] == '\n';
 
-		private static async Task WriteResponseAsync(
-			NetworkStream stream, string responseBody, IEnumerable<string> responseHeaders)
+		private static async Task WriteResponseAsync(NetworkStream stream, string responseBody)
 		{
 			byte[] bodyBytes = Encoding.UTF8.GetBytes(responseBody);
 			StringBuilder response = new();
 			response.Append("HTTP/1.1 200 OK\r\n");
-			foreach (string header in responseHeaders) {
-				response.Append(header).Append("\r\n");
-			}
 			response.Append("Content-Type: application/json\r\n");
 			response.Append("Content-Length: ").Append(bodyBytes.Length).Append("\r\n");
 			response.Append("Connection: close\r\n\r\n");

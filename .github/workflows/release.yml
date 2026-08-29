@@ -45,14 +45,16 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: |
+            8.0.x
+            10.0.x
 
       - name: Restore
         run: dotnet restore creatioclient.sln
 
       - name: Build
         run: |
-          dotnet build creatioclient/creatioclient.csproj \
+          dotnet build creatioclient.sln \
             --configuration Release \
             --no-restore \
             /p:Version=${{ steps.ver.outputs.version }} \
