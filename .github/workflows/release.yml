@@ -67,9 +67,11 @@ jobs:
       - name: Extract version
         id: ver
         shell: bash
+        env:
+          VERSION_INPUT: ${{ github.event.inputs.version }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            version="${{ github.event.inputs.version }}"
+            version="$VERSION_INPUT"
             tag="v$version"
           else
             tag="${GITHUB_REF_NAME}"
@@ -86,7 +88,9 @@ jobs:
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: |
+            8.0.x
+            10.0.x
 
       - name: Restore
         run: dotnet restore creatioclient/creatioclient.csproj
