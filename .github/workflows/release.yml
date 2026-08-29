@@ -24,25 +24,6 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Extract version
-        id: ver
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            version="${{ github.event.inputs.version }}"
-            tag="v$version"
-          else
-            tag="${GITHUB_REF_NAME}"
-            version="${tag#v}"
-          fi
-          if ! [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid version format: '$version' (expected X.Y.Z, e.g. 1.0.34)"
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag"         >> "$GITHUB_OUTPUT"
-          echo "Releasing $tag (version $version)"
-
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
         with:
@@ -57,10 +38,7 @@ jobs:
         run: |
           dotnet build creatioclient.sln \
             --configuration Release \
-            --no-restore \
-            /p:Version=${{ steps.ver.outputs.version }} \
-            /p:AssemblyVersion=${{ steps.ver.outputs.version }} \
-            /p:FileVersion=${{ steps.ver.outputs.version }}
+            --no-restore
 
       - name: Test
         shell: bash
