@@ -568,7 +568,7 @@ namespace Creatio.Client
 			return ExecuteHttpRequest(new HttpMethod("PATCH"), url, requestData, requestTimeout, maxAttempts, delaySec);
 		}
 
-		public string ExecutePutRequest(string url, string requestData, int requestTimeout = 100_000, int maxAttempts = 1, int delaySec = 1){
+		public string ExecutePutRequest(string url, string requestData, int requestTimeout = 10000, int maxAttempts = 1, int delaySec = 1){
 			return ExecuteHttpRequest(HttpMethod.Put, url, requestData, requestTimeout, maxAttempts, delaySec);
 		}
 
