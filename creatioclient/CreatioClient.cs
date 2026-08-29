@@ -563,6 +563,35 @@ namespace Creatio.Client
 			}, maxAttempts, delaySec, _retryPolicy);
 		}
 
+		public string ExecutePutRequest(string url, string requestData, int requestTimeout = 10000, int maxAttempts = 1, int delaySec = 1){
+			return Retry<string>(() => {
+				using (var handler = CreateCreatioHandler()) {
+					HttpRequestMessage BuildRequest(HttpClient client) {
+						HttpRequestMessage message = new HttpRequestMessage(HttpMethod.Put, url) {
+							Content = new StringContent(requestData ?? string.Empty, Encoding.UTF8, "application/json")
+						};
+						client.Timeout = TimeSpan.FromMilliseconds(requestTimeout);
+						return message;
+					}
+
+					if (_oauthToken != null) {
+						using (HttpClient client = new HttpClient(handler)) {
+							client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _oauthToken);
+							HttpResponseMessage response = client.SendAsync(BuildRequest(client)).Result;
+							return response.Content.ReadAsStringAsync().Result;
+						}
+					}
+
+					handler.CookieContainer = AuthCookie;
+					using (HttpClient client = new HttpClient(handler)) {
+						AddCsrfToken(client);
+						HttpResponseMessage response = client.SendAsync(BuildRequest(client)).Result;
+						return response.Content.ReadAsStringAsync().Result;
+					}
+				}
+			}, maxAttempts, delaySec, _retryPolicy);
+		}
+
 		static T Retry<T>(Func<T> func, int maxAttempts, int delaySeconds, RetryPolicy retryPolicy = RetryPolicy.Simple) {
 			if (maxAttempts < 1) maxAttempts = 1;   // a 0/negative count must never silently skip the request
 			int attempts = 0;
@@ -979,4 +1008,3 @@ namespace Creatio.Client
 
 	#endregion
 }
-

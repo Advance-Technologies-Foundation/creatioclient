@@ -84,6 +84,17 @@ namespace Creatio.Client
 		string ExecutePatchRequest(string url, string requestData, int requestTimeout = 100_000, int maxAttempts = 1, int delaySec = 1);
 
 		/// <summary>
+		/// Executes a PUT request to the specified URL.
+		/// </summary>
+		/// <param name="url">The URL to send the PUT request to.</param>
+		/// <param name="requestData">The JSON data to send with the request.</param>
+		/// <param name="requestTimeout">Optional. The timeout for the request in milliseconds. Default is 100000.</param>
+		/// <param name="maxAttempts">Optional. Total number of attempts to make (minimum 1; values below 1 are treated as 1). Default is 1 (a single attempt, no retries).</param>
+		/// <param name="delaySec">Optional. The delay in seconds before retrying the request. Default is 1.</param>
+		/// <returns>The response from the PUT request as a string.</returns>
+		string ExecutePutRequest(string url, string requestData, int requestTimeout = 100_000, int maxAttempts = 1, int delaySec = 1);
+
+		/// <summary>
 		/// Logs in to the Creatio application.
 		/// </summary>
 		void Login();
