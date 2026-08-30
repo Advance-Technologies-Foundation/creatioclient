@@ -99,12 +99,17 @@ Each `CreatioClient` instance owns one lazily initialized, pooled `HttpClient`. 
 - OAuth adds the bearer token in the delegating handler.
 - NTLM/Windows credentials are scoped to the configured Creatio origin through `CredentialCache`
   and handled by the primary `HttpClientHandler`.
-- Authenticated requests and followed redirects are restricted to the configured scheme, host,
-  and port so credentials are not forwarded cross-origin.
+- Authenticated requests and followed redirects are restricted to the configured origin or a
+  same-host HTTP-to-HTTPS upgrade so credentials are not forwarded to unrelated origins.
 
 `CreatioClient` is disposable. Callers own and must dispose each `HttpResponseMessage` returned by
 the response-returning async API. `ATFWebRequestExtensions` remains public only for compatibility;
 the production `CreatioClient` transport does not call it.
+
+Synchronous protocol failures use a narrowly scoped `HttpWebResponse` compatibility view because Clio
+casts `WebException.Response` to that concrete type. It preserves the status, description, headers,
+request URI, method, and bounded error body. Do not treat it as general-purpose `HttpWebResponse`
+emulation; use the async response API when other metadata is needed.
 
 ### SSL
 

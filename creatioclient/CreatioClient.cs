@@ -7,6 +7,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.WebSockets;
+using System.Runtime.Serialization;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -41,8 +42,8 @@ namespace Creatio.Client
 		private readonly ICredentials _credentials;
 		private string _appUrl;
 		private readonly object _httpClientLock = new object();
-		private HttpClient _httpClient;
-		private CreatioAuthenticationHandler _authenticationHandler;
+		private volatile HttpClient _httpClient;
+		private volatile CreatioAuthenticationHandler _authenticationHandler;
 		private bool _disposed;
 
 		#endregion
@@ -60,7 +61,7 @@ namespace Creatio.Client
 
 		internal CookieContainer AuthCookie {
 			get {
-				EnsureAuthenticatedAsync(100_000, CancellationToken.None).GetAwaiter().GetResult();
+				EnsureLegacyAuthentication();
 				return _authCookie;
 			}
 		}
@@ -263,27 +264,133 @@ namespace Creatio.Client
 			return source;
 		}
 
+		private static HttpResponseMessage CreateEmptyResponse() =>
+			new HttpResponseMessage(HttpStatusCode.NoContent) {
+				Content = new StringContent(string.Empty)
+			};
+
 		private static ICredentials CreateScopedCredentials(ICredentials credentials, Uri appUri)
 		{
 			if (credentials == null) {
 				return null;
 			}
 			CredentialCache cache = new CredentialCache();
-			NetworkCredential negotiate = credentials.GetCredential(appUri, "Negotiate");
-			NetworkCredential ntlm = credentials.GetCredential(appUri, "NTLM");
-			if (negotiate != null) {
-				cache.Add(appUri, "Negotiate", negotiate);
-			}
-			if (ntlm != null) {
-				cache.Add(appUri, "NTLM", ntlm);
+			AddScopedCredentials(cache, credentials, appUri);
+			if (appUri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)) {
+				UriBuilder secure = new UriBuilder(appUri) { Scheme = Uri.UriSchemeHttps, Port = 443 };
+				AddScopedCredentials(cache, credentials, secure.Uri);
 			}
 			return cache;
+		}
+
+		private static void AddScopedCredentials(CredentialCache cache, ICredentials credentials, Uri uri)
+		{
+			NetworkCredential negotiate = credentials.GetCredential(uri, "Negotiate");
+			NetworkCredential ntlm = credentials.GetCredential(uri, "NTLM");
+			if (negotiate != null) {
+				cache.Add(uri, "Negotiate", negotiate);
+			}
+			if (ntlm != null) {
+				cache.Add(uri, "NTLM", ntlm);
+			}
 		}
 
 		private void ThrowIfDisposed()
 		{
 			if (_disposed) {
 				throw new ObjectDisposedException(nameof(CreatioClient));
+			}
+		}
+
+		private void EnsureLegacyAuthentication() => ExecuteLegacyWebRequest(() =>
+			EnsureAuthenticatedAsync(100_000, CancellationToken.None).GetAwaiter().GetResult());
+
+		private static void ExecuteLegacyWebRequest(Action action)
+		{
+			try {
+				action();
+			} catch (WebException) {
+				throw;
+			} catch (OperationCanceledException exception) {
+				throw new WebException(exception.Message, exception, WebExceptionStatus.Timeout, null);
+			} catch (HttpRequestException exception) {
+				throw new WebException(exception.Message, exception, WebExceptionStatus.ConnectFailure, null);
+			}
+		}
+
+		private static void EnsureLegacySuccess(HttpResponseMessage response)
+		{
+			if (!response.IsSuccessStatusCode) {
+				WebResponse legacyResponse = LegacyHttpWebResponse.Create(response);
+				throw new WebException(
+					$"The remote server returned an error: ({(int)response.StatusCode}) {response.ReasonPhrase}.",
+					null, WebExceptionStatus.ProtocolError, legacyResponse);
+			}
+		}
+
+		private sealed class LegacyHttpWebResponse : HttpWebResponse
+		{
+			private byte[] _body;
+			private WebHeaderCollection _headers;
+			private Uri _responseUri;
+			private HttpStatusCode _statusCode;
+			private string _statusDescription;
+			private string _method;
+
+			#pragma warning disable 0618, SYSLIB0051
+			private LegacyHttpWebResponse(SerializationInfo info, StreamingContext context)
+				: base(info, context) { }
+			#pragma warning restore 0618, SYSLIB0051
+
+			internal static LegacyHttpWebResponse Create(HttpResponseMessage response)
+			{
+				LegacyHttpWebResponse result = (LegacyHttpWebResponse)
+					FormatterServices.GetUninitializedObject(typeof(LegacyHttpWebResponse));
+				result._body = response.Content?.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+					?? Array.Empty<byte>();
+				result._headers = new WebHeaderCollection();
+				result._responseUri = response.RequestMessage?.RequestUri;
+				result._statusCode = response.StatusCode;
+				result._statusDescription = response.ReasonPhrase;
+				result._method = response.RequestMessage?.Method.Method;
+				foreach (KeyValuePair<string, IEnumerable<string>> header in response.Headers) {
+					result._headers[header.Key] = string.Join(", ", header.Value);
+				}
+				if (response.Content != null) {
+					foreach (KeyValuePair<string, IEnumerable<string>> header in response.Content.Headers) {
+						result._headers[header.Key] = string.Join(", ", header.Value);
+					}
+				}
+				return result;
+			}
+
+			public override long ContentLength {
+				get => _body.LongLength;
+				set => throw new NotSupportedException();
+			}
+
+			public override string ContentType {
+				get => _headers[HttpResponseHeader.ContentType];
+				set => throw new NotSupportedException();
+			}
+
+			public override WebHeaderCollection Headers => _headers;
+			public override string Method => _method;
+			public override Uri ResponseUri => _responseUri;
+			public override HttpStatusCode StatusCode => _statusCode;
+			public override string StatusDescription => _statusDescription;
+			public override bool SupportsHeaders => true;
+			public override Stream GetResponseStream() => new MemoryStream(_body, writable: false);
+			public override void Close() { }
+		}
+
+		private static string ReadLegacyServiceResponse(Task<HttpResponseMessage> responseTask)
+		{
+			try {
+				return ReadResponseBody(responseTask);
+			} catch (AggregateException exception) when (exception.InnerException is HttpRequestException
+				|| exception.InnerException is OperationCanceledException) {
+				return string.Empty;
 			}
 		}
 
@@ -447,6 +554,7 @@ namespace Creatio.Client
 			string serviceMethod,
 			string requestData,
 			int requestTimeout = 100000){
+			EnsureLegacyAuthentication();
 			return ReadResponseBody(CallConfigurationServiceAsync(serviceName, serviceMethod, requestData,
 				requestTimeout, CancellationToken.None));
 		}
@@ -458,10 +566,12 @@ namespace Creatio.Client
 				requestTimeout, _maxAttempts, _delaySec, cancellationToken);
 
 		public void DownloadFile(string url, string filePath, string requestData, int requestTimeout = 100000){
-			using (HttpResponseMessage response = DownloadFileAsync(url, filePath, requestData, requestTimeout,
-				CancellationToken.None).GetAwaiter().GetResult()) {
-				response.EnsureSuccessStatusCode();
-			}
+			ExecuteLegacyWebRequest(() => {
+				using (HttpResponseMessage response = DownloadFileAsync(url, filePath, requestData, requestTimeout,
+					CancellationToken.None).GetAwaiter().GetResult()) {
+					EnsureLegacySuccess(response);
+				}
+			});
 		}
 
 		public Task<HttpResponseMessage> DownloadFileAsync(string url, string filePath, string requestData,
@@ -469,10 +579,12 @@ namespace Creatio.Client
 			DownloadToFileAsync(HttpMethod.Post, url, filePath, requestData, requestTimeout, cancellationToken);
 
 		public void DownloadFileByGet(string url, string filePath, int requestTimeout = 100000) {
-			using (HttpResponseMessage response = DownloadFileByGetAsync(url, filePath, requestTimeout,
-				CancellationToken.None).GetAwaiter().GetResult()) {
-				response.EnsureSuccessStatusCode();
-			}
+			ExecuteLegacyWebRequest(() => {
+				using (HttpResponseMessage response = DownloadFileByGetAsync(url, filePath, requestTimeout,
+					CancellationToken.None).GetAwaiter().GetResult()) {
+					EnsureLegacySuccess(response);
+				}
+			});
 		}
 
 		public Task<HttpResponseMessage> DownloadFileByGetAsync(string url, string filePath,
@@ -480,6 +592,7 @@ namespace Creatio.Client
 			DownloadToFileAsync(HttpMethod.Get, url, filePath, null, requestTimeout, cancellationToken);
 
 		public string ExecuteGetRequest(string url, int requestTimeout = 100000, int maxAttempts = 1, int delaySec = 1) {
+			EnsureLegacyAuthentication();
 			try {
 				return ReadResponseBody(SendAsync(
 					() => CreateJsonRequest(HttpMethod.Get, url, null, omitEmptyContent: true),
@@ -498,6 +611,7 @@ namespace Creatio.Client
 				requestTimeout, maxAttempts, delaySec, cancellationToken);
 
 		public string ExecutePostRequest(string url, string requestData, int requestTimeout = 10000, int maxAttempts = 1, int delaySec = 1){
+			EnsureLegacyAuthentication();
 			return ReadResponseBody(ExecutePostRequestAsync(url, requestData, requestTimeout, maxAttempts,
 				delaySec, CancellationToken.None));
 		}
@@ -514,9 +628,12 @@ namespace Creatio.Client
 		}
 
 		public string ExecuteDeleteRequest(string url, string requestData, int requestTimeout = 10000,
-			int maxAttempts = 1, int delaySec = 1) =>
-			ReadResponseBody(ExecuteDeleteRequestAsync(url, requestData, requestTimeout, maxAttempts,
+			int maxAttempts = 1, int delaySec = 1)
+		{
+			EnsureLegacyAuthentication();
+			return ReadResponseBody(ExecuteDeleteRequestAsync(url, requestData, requestTimeout, maxAttempts,
 				delaySec, CancellationToken.None));
+		}
 
 		public Task<HttpResponseMessage> ExecuteDeleteRequestAsync(string url, string requestData,
 			int requestTimeout = 10000, int maxAttempts = 1, int delaySec = 1,
@@ -525,6 +642,7 @@ namespace Creatio.Client
 				requestTimeout, maxAttempts, delaySec, cancellationToken);
 
 		public string ExecutePatchRequest(string url, string requestData, int requestTimeout = 10000, int maxAttempts = 1, int delaySec = 1){
+			EnsureLegacyAuthentication();
 			return ReadResponseBody(ExecutePatchRequestAsync(url, requestData, requestTimeout, maxAttempts,
 				delaySec, CancellationToken.None));
 		}
@@ -536,6 +654,7 @@ namespace Creatio.Client
 				maxAttempts, delaySec, cancellationToken);
 
 		public string ExecutePutRequest(string url, string requestData, int requestTimeout = 10000, int maxAttempts = 1, int delaySec = 1){
+			EnsureLegacyAuthentication();
 			return ReadResponseBody(ExecutePutRequestAsync(url, requestData, requestTimeout, maxAttempts,
 				delaySec, CancellationToken.None));
 		}
@@ -576,6 +695,7 @@ namespace Creatio.Client
 							.ConfigureAwait(false);
 						if (!response.IsSuccessStatusCode) {
 							if (attempt == maxAttempts) {
+								await BufferResponseContentAsync(response, timeout.Token).ConfigureAwait(false);
 								return response;
 							}
 							response.Dispose();
@@ -609,18 +729,42 @@ namespace Creatio.Client
 			throw new InvalidOperationException("The download retry loop completed without a response.");
 		}
 
-		public void Login(){
-			using (HttpResponseMessage response = LoginAsync(100_000, CancellationToken.None)
-				.GetAwaiter().GetResult()) {
-				response.EnsureSuccessStatusCode();
+		private static async Task BufferResponseContentAsync(HttpResponseMessage response,
+			CancellationToken cancellationToken)
+		{
+			if (response.Content == null) {
+				return;
 			}
+			HttpContent original = response.Content;
+			List<KeyValuePair<string, IEnumerable<string>>> headers = original.Headers.ToList();
+			using (Stream source = await original.ReadAsStreamAsync().ConfigureAwait(false))
+			using (MemoryStream buffer = new MemoryStream()) {
+				byte[] bytes = new byte[81920];
+				int read;
+				while ((read = await source.ReadAsync(bytes, 0, bytes.Length, cancellationToken)
+					.ConfigureAwait(false)) != 0) {
+					await buffer.WriteAsync(bytes, 0, read, cancellationToken).ConfigureAwait(false);
+				}
+				ByteArrayContent buffered = new ByteArrayContent(buffer.ToArray());
+				foreach (KeyValuePair<string, IEnumerable<string>> header in headers) {
+					buffered.Headers.TryAddWithoutValidation(header.Key, header.Value);
+				}
+				response.Content = buffered;
+			}
+			original.Dispose();
+		}
+
+		public void Login(){
+			Login(100_000);
 		}
 
 		public void Login(int requestTimeout){
-			using (HttpResponseMessage response = LoginAsync(requestTimeout, CancellationToken.None)
-				.GetAwaiter().GetResult()) {
-				response.EnsureSuccessStatusCode();
-			}
+			ExecuteLegacyWebRequest(() => {
+				using (HttpResponseMessage response = LoginAsync(requestTimeout, CancellationToken.None)
+					.GetAwaiter().GetResult()) {
+					EnsureLegacySuccess(response);
+				}
+			});
 		}
 
 		public Task<HttpResponseMessage> LoginAsync(int requestTimeout = 100000,
@@ -689,11 +833,12 @@ namespace Creatio.Client
 					}
 				}
 			}
-			return lastResponse ?? new HttpResponseMessage(HttpStatusCode.NoContent);
+			return lastResponse ?? CreateEmptyResponse();
 		}
 
 		public string UploadChunkAlmFile(string url, byte[] data, int downloadedSize, int totalSize) {
-			return ReadResponseBody(UploadChunkAlmFileAsync(url, data, downloadedSize, totalSize,
+			EnsureLegacyAuthentication();
+			return ReadLegacyServiceResponse(UploadChunkAlmFileAsync(url, data, downloadedSize, totalSize,
 				100_000, CancellationToken.None));
 		}
 
@@ -714,7 +859,8 @@ namespace Creatio.Client
 		}
 
 		public string UploadAlmFile(string url, string filePath){
-			return ReadResponseBody(UploadAlmFileAsync(url, filePath, 100_000, CancellationToken.None));
+			EnsureLegacyAuthentication();
+			return ReadLegacyServiceResponse(UploadAlmFileAsync(url, filePath, 100_000, CancellationToken.None));
 		}
 
 		public async Task<HttpResponseMessage> UploadAlmFileAsync(string url, string filePath,
@@ -779,6 +925,7 @@ namespace Creatio.Client
 		}
 		
 		public string UploadStaticFile(string url, string filePath, string folderName, int defaultTimeout = 100_000, int chunkSize = 1 * 1024 * 1024){
+			EnsureLegacyAuthentication();
 			return UploadStaticFileAsync(url, filePath, folderName, defaultTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
 		}
 		
@@ -797,6 +944,7 @@ namespace Creatio.Client
 				(fileName, mime, length) => url + "&fileName=" + fileName + $"folderName={folderName}");
 
 		public string UploadFile(string url, string filePath, int defaultTimeout = 100_000, int chunkSize = 1 * 1024 * 1024){
+			EnsureLegacyAuthentication();
 			return UploadFileAsync(url, filePath, defaultTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
 		}
 		public async Task<string> UploadFileAsync(string url, string filePath, int defaultTimeout = 100_000, int chunkSize = 1 * 1024 * 1024){
@@ -845,11 +993,12 @@ namespace Creatio.Client
 					HandleUploadResponse(response, result, totalBytesRead, stream.Length);
 				}
 			}
-			return lastResponse ?? new HttpResponseMessage(HttpStatusCode.NoContent);
+			return lastResponse ?? CreateEmptyResponse();
 		}
 		
 		public string UploadFile_original(string url, string filePath, int defaultTimeout = 100000){
-			return ReadResponseBody(UploadFile_originalAsync(url, filePath, defaultTimeout,
+			EnsureLegacyAuthentication();
+			return ReadLegacyServiceResponse(UploadFile_originalAsync(url, filePath, defaultTimeout,
 				CancellationToken.None));
 		}
 
@@ -938,7 +1087,7 @@ namespace Creatio.Client
 					HandleUploadResponse(response, result, totalBytesRead, stream.Length);
 				}
 			}
-			return lastResponse ?? new HttpResponseMessage(HttpStatusCode.NoContent);
+			return lastResponse ?? CreateEmptyResponse();
 		}
 
 		public bool DownloadAttachment(string schemaName, Guid recordId, string filePath, int timeout = 100000) {
@@ -951,11 +1100,15 @@ namespace Creatio.Client
 			if (string.IsNullOrEmpty(filePath)) {
 				throw new ArgumentException("FilePath cannot be null or empty", nameof(filePath));
 			}
-			using (HttpResponseMessage response = DownloadAttachmentAsync(schemaName, recordId, filePath, timeout,
-				CancellationToken.None).GetAwaiter().GetResult()) {
-				response.EnsureSuccessStatusCode();
-				return true;
-			}
+			bool result = false;
+			ExecuteLegacyWebRequest(() => {
+				using (HttpResponseMessage response = DownloadAttachmentAsync(schemaName, recordId, filePath, timeout,
+					CancellationToken.None).GetAwaiter().GetResult()) {
+					EnsureLegacySuccess(response);
+					result = true;
+				}
+			});
+			return result;
 		}
 
 		public Task<HttpResponseMessage> DownloadAttachmentAsync(string schemaName, Guid recordId,

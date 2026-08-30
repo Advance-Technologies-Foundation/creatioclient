@@ -68,6 +68,25 @@ public class ModernHttpClientTransportTests
 	}
 
 	[Test]
+	public async Task AuthenticationHandler_ShouldReturnCancellationWhenInnerHandlerFinishesLate()
+	{
+		Uri appUri = new("https://creatio.test/");
+		using CreatioAuthenticationHandler authentication = new(appUri, new CookieContainer(), null, null,
+			null, () => "token", () => null, () => true, true,
+			new DelayedIgnoringCancellationHandler());
+		using HttpMessageInvoker invoker = new(authentication);
+		using CancellationTokenSource cancellation = new(TimeSpan.FromMilliseconds(20));
+
+		Func<Task> act = async () => {
+			using HttpResponseMessage response = await invoker.SendAsync(
+				new HttpRequestMessage(HttpMethod.Get, appUri), cancellation.Token);
+		};
+
+		await act.Should().ThrowAsync<OperationCanceledException>();
+		await Task.Delay(150);
+	}
+
+	[Test]
 	public async Task ConcurrentCookieRequests_ShouldAuthenticateOnceAndShareTheSession()
 	{
 		const int requestCount = 5;
@@ -137,6 +156,22 @@ public class ModernHttpClientTransportTests
 		};
 
 		await act.Should().ThrowAsync<UnauthorizedAccessException>();
+		await capture;
+	}
+
+	[Test]
+	public async Task LoginAsync_ShouldApplyTimeoutWhileReadingResponseBody()
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			LoginResponse() with { BodyDelay = TimeSpan.FromMilliseconds(400) });
+		using CreatioClient client = new(server.BaseUri.ToString(), "user", "password");
+
+		Func<Task> act = async () => {
+			using HttpResponseMessage response = await client.LoginAsync(requestTimeout: 50);
+		};
+
+		await act.Should().ThrowAsync<OperationCanceledException>();
 		await capture;
 	}
 
@@ -350,6 +385,64 @@ public class ModernHttpClientTransportTests
 		requests.Select(item => item.Target).Should().ContainInOrder("/", "/final");
 	}
 
+	[Test]
+	public async Task SameHostHttpToHttpsRedirect_ShouldRemainTrusted()
+	{
+		Uri appUri = new("http://creatio.test/");
+		SequenceHandler inner = new(
+			request => {
+				HttpResponseMessage response = Response(HttpStatusCode.Redirect, string.Empty);
+				response.Headers.Location = new Uri("https://creatio.test/final");
+				return response;
+			},
+			request => Response(HttpStatusCode.OK, "final"));
+		using CreatioAuthenticationHandler authentication = new(appUri, new CookieContainer(), null, null,
+			null, () => "token", () => null, () => true, true, inner);
+		using HttpMessageInvoker invoker = new(authentication);
+
+		using HttpResponseMessage response = await invoker.SendAsync(
+			new HttpRequestMessage(HttpMethod.Get, appUri), CancellationToken.None);
+
+		response.StatusCode.Should().Be(HttpStatusCode.OK);
+		inner.Requests.Select(item => item.RequestUri!.Scheme).Should().ContainInOrder("http", "https");
+	}
+
+	[Test]
+	public async Task SameHostHttpsAlternatePort_ShouldNotBeTrustedAsAnUpgrade()
+	{
+		Uri appUri = new("http://creatio.test/");
+		SequenceHandler inner = new(request => Response(HttpStatusCode.OK, "unexpected"));
+		using CreatioAuthenticationHandler authentication = new(appUri, new CookieContainer(), null, null,
+			null, () => "token", () => null, () => true, true, inner);
+		using HttpMessageInvoker invoker = new(authentication);
+
+		Func<Task> act = async () => {
+			using HttpResponseMessage response = await invoker.SendAsync(
+				new HttpRequestMessage(HttpMethod.Get, "https://creatio.test:4443/data"), CancellationToken.None);
+		};
+
+		await act.Should().ThrowAsync<InvalidOperationException>();
+		inner.Requests.Should().BeEmpty();
+	}
+
+	[Test]
+	public async Task EmptyChunkedUploadResponse_ShouldAlwaysHaveReadableContent()
+	{
+		string path = Path.GetTempFileName();
+		try {
+			using CreatioClient client = new("https://example.invalid", "token");
+
+			using HttpResponseMessage response = await client.UploadAlmFileByChunkAsync(
+				"https://example.invalid/upload", path);
+
+			response.StatusCode.Should().Be(HttpStatusCode.NoContent);
+			(await response.Content.ReadAsStringAsync()).Should().BeEmpty();
+		}
+		finally {
+			File.Delete(path);
+		}
+	}
+
 	[TestCase(301)]
 	[TestCase(302)]
 	[TestCase(303)]
@@ -498,6 +591,16 @@ public class ModernHttpClientTransportTests
 		{
 			Requests.Add(request);
 			return Task.FromResult(_responses.Dequeue()(request));
+		}
+	}
+
+	private sealed class DelayedIgnoringCancellationHandler : HttpMessageHandler
+	{
+		protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+			CancellationToken cancellationToken)
+		{
+			await Task.Delay(100);
+			return Response(HttpStatusCode.OK, "late");
 		}
 	}
 

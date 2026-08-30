@@ -81,8 +81,11 @@ string content = await response.Content.ReadAsStringAsync();
 The caller owns every `HttpResponseMessage` returned by an async operation and must dispose it.
 `CreatioClient` owns its shared `HttpClient` and should also be disposed when it is no longer needed.
 The existing synchronous methods remain available and retain their string, file, and exception behavior.
-Authenticated request URLs must use the same scheme, host, and port as the configured Creatio application;
-the client rejects cross-origin requests rather than forwarding bearer, cookie, CSRF, or Windows credentials.
+For synchronous protocol errors, `WebException.Response` remains castable to `HttpWebResponse` and
+preserves the status, description, headers, request URI, method, and buffered error body used by known
+consumers. It is a bounded compatibility view; use the async API when other response metadata is required.
+Authenticated request URLs must use the configured Creatio origin or a same-host HTTP-to-HTTPS upgrade;
+the client rejects unrelated cross-origin requests rather than forwarding bearer, cookie, CSRF, or Windows credentials.
 
 The CI coverage gate enforces 100% line and branch coverage for the authentication handler pipeline.
 DTO property bags, WebSocket listeners, the compatibility-only `HttpWebRequest` extension surface, and

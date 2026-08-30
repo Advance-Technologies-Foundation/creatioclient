@@ -144,7 +144,13 @@ public class LegacyHttpBehaviorCharacterizationTests
 
 			Action act = () => client.DownloadFileByGet(server.BaseUri.ToString(), path);
 
-			act.Should().Throw<HttpRequestException>();
+			WebException exception = act.Should().Throw<WebException>().Which;
+			exception.Status.Should().Be(WebExceptionStatus.ProtocolError);
+			HttpWebResponse response = exception.Response.Should().BeAssignableTo<HttpWebResponse>().Subject;
+			response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+			using (StreamReader reader = new(exception.Response.GetResponseStream())) {
+				reader.ReadToEnd().Should().Be("error-body");
+			}
 			await capture;
 			File.ReadAllBytes(path).Should().Equal(original);
 		}
@@ -170,6 +176,28 @@ public class LegacyHttpBehaviorCharacterizationTests
 
 			(await capture).Should().HaveCount(2);
 			File.ReadAllBytes(path).Should().Equal(expected);
+		}
+		finally {
+			File.Delete(path);
+		}
+	}
+
+	[Test]
+	public async Task DownloadFileByGet_ShouldApplyTimeoutWhileReadingErrorBody()
+	{
+		string path = Path.GetTempFileName();
+		try {
+			await using ScriptedLoopbackHttpServer server = new();
+			Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+				new ScriptedResponse(StatusCode: 500, Body: "late-error",
+					BodyDelay: TimeSpan.FromMilliseconds(400)));
+			CreatioClient client = new(server.BaseUri.ToString(), "token");
+
+			Action act = () => client.DownloadFileByGet(server.BaseUri.ToString(), path, requestTimeout: 50);
+
+			act.Should().Throw<WebException>()
+				.Which.Status.Should().Be(WebExceptionStatus.Timeout);
+			await capture;
 		}
 		finally {
 			File.Delete(path);
@@ -229,6 +257,63 @@ public class LegacyHttpBehaviorCharacterizationTests
 		Action act = () => client.ExecutePostRequest(server.BaseUri.ToString(), null);
 
 		act.Should().Throw<ArgumentNullException>();
+	}
+
+	[Test]
+	public async Task Login_ShouldRetainWebExceptionContractForHttpErrors()
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			new ScriptedResponse(StatusCode: 500, Body: "login-error"));
+		CreatioClient client = new(server.BaseUri.ToString(), "user", "password");
+
+		Action act = client.Login;
+
+		act.Should().Throw<WebException>();
+		await capture;
+	}
+
+	[Test]
+	public async Task UploadAlmFile_ShouldRetainEmptyStringContractForTransportFailure()
+	{
+		string path = Path.GetTempFileName();
+		await File.WriteAllTextAsync(path, "body");
+		try {
+			await using ScriptedLoopbackHttpServer server = new();
+			Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+				new ScriptedResponse(CloseWithoutResponse: true));
+			CreatioClient client = new(server.BaseUri.ToString(), "token");
+
+			string result = client.UploadAlmFile(server.BaseUri.ToString(), path);
+
+			result.Should().BeEmpty();
+			await capture;
+		}
+		finally {
+			File.Delete(path);
+		}
+	}
+
+	[Test]
+	public async Task EmptyFileFacades_ShouldReturnEmptyStrings()
+	{
+		string path = Path.GetTempFileName();
+		try {
+			using CreatioClient client = new("https://example.invalid", "token");
+
+			client.UploadFile("https://example.invalid/upload", path).Should().BeEmpty();
+			client.UploadStaticFile("https://example.invalid/upload?x=1", path, "folder").Should().BeEmpty();
+			(await client.UploadAttachmentAsync(new Creatio.Client.Dto.FileUploadInfo {
+				EntitySchemaName = "ContactFile",
+				ColumnName = "Data",
+				FilePath = path,
+				ParentColumnName = "Contact",
+				ParentColumnValue = Guid.NewGuid()
+			})).Should().BeEmpty();
+		}
+		finally {
+			File.Delete(path);
+		}
 	}
 
 	[Test]

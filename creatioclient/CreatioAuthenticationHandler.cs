@@ -56,7 +56,7 @@ namespace Creatio.Client
 		protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
 			CancellationToken cancellationToken)
 		{
-			if (!IsSameOrigin(request.RequestUri)) {
+			if (!IsTrustedOrigin(request.RequestUri)) {
 				throw new InvalidOperationException("CreatioClient cannot send authenticated requests to a different origin.");
 			}
 			string token = _bearerToken();
@@ -118,7 +118,8 @@ namespace Creatio.Client
 				Content = new StringContent(body, Encoding.UTF8, "application/json")
 			}) {
 				HttpResponseMessage response = await SendInnerAsync(request, cancellationToken).ConfigureAwait(false);
-				string responseBody = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+				string responseBody = await ReadContentWithCancellationAsync(response, cancellationToken)
+					.ConfigureAwait(false);
 				if (responseBody.Contains("\"Code\":1")) {
 					response.Dispose();
 					throw new UnauthorizedAccessException($"Unauthorized {_userName} for {_appUri.ToString().TrimEnd('/')}");
@@ -165,6 +166,15 @@ namespace Creatio.Client
 			&& requestUri.Host.Equals(_appUri.Host, StringComparison.OrdinalIgnoreCase)
 			&& requestUri.Port == _appUri.Port;
 
+		private bool IsTrustedOrigin(Uri requestUri) => IsSameOrigin(requestUri)
+			|| IsSameHostHttpsUpgrade(requestUri);
+
+		private bool IsSameHostHttpsUpgrade(Uri requestUri) => requestUri != null
+			&& _appUri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+			&& requestUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+			&& requestUri.Host.Equals(_appUri.Host, StringComparison.OrdinalIgnoreCase)
+			&& requestUri.Port == 443;
+
 		private static Uri EnsureTrailingSlash(Uri uri) =>
 			new Uri(uri.AbsoluteUri.TrimEnd('/') + "/", UriKind.Absolute);
 
@@ -175,15 +185,15 @@ namespace Creatio.Client
 			bool ownsCurrent = false;
 			try {
 				for (int redirectCount = 0; redirectCount < 50; redirectCount++) {
-					HttpResponseMessage response = await base.SendAsync(current, cancellationToken)
-						.ConfigureAwait(false);
+					HttpResponseMessage response = await AwaitWithCancellationAsync(
+						base.SendAsync(current, cancellationToken), cancellationToken).ConfigureAwait(false);
 					if (!IsRedirect(response.StatusCode) || response.Headers.Location == null) {
 						return response;
 					}
 					Uri location = response.Headers.Location.IsAbsoluteUri
 						? response.Headers.Location
 						: new Uri(current.RequestUri, response.Headers.Location);
-					if (!IsSameOrigin(location)) {
+					if (!IsTrustedOrigin(location)) {
 						return response;
 					}
 					HttpRequestMessage redirected = CreateRedirectRequest(current, response.StatusCode, location);
@@ -233,6 +243,50 @@ namespace Creatio.Client
 			|| statusCode == HttpStatusCode.RedirectMethod
 			|| (int)statusCode == 307
 			|| (int)statusCode == 308;
+
+		private static async Task<HttpResponseMessage> AwaitWithCancellationAsync(
+			Task<HttpResponseMessage> responseTask, CancellationToken cancellationToken)
+		{
+			if (!cancellationToken.CanBeCanceled) {
+				return await responseTask.ConfigureAwait(false);
+			}
+			TaskCompletionSource<bool> canceled = new TaskCompletionSource<bool>(
+				TaskCreationOptions.RunContinuationsAsynchronously);
+			using (cancellationToken.Register(() => canceled.TrySetResult(true))) {
+				if (await Task.WhenAny(responseTask, canceled.Task).ConfigureAwait(false) != responseTask) {
+					_ = responseTask.ContinueWith(task => {
+						if (task.Status == TaskStatus.RanToCompletion) {
+							task.Result.Dispose();
+						} else {
+							_ = task.Exception;
+						}
+					}, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+					throw new OperationCanceledException(cancellationToken);
+				}
+			}
+			return await responseTask.ConfigureAwait(false);
+		}
+
+		private static async Task<string> ReadContentWithCancellationAsync(HttpResponseMessage response,
+			CancellationToken cancellationToken)
+		{
+			Task<string> readTask = response.Content.ReadAsStringAsync();
+			if (!cancellationToken.CanBeCanceled) {
+				return await readTask.ConfigureAwait(false);
+			}
+			TaskCompletionSource<bool> canceled = new TaskCompletionSource<bool>(
+				TaskCreationOptions.RunContinuationsAsynchronously);
+			using (cancellationToken.Register(() => canceled.TrySetResult(true))) {
+				if (await Task.WhenAny(readTask, canceled.Task).ConfigureAwait(false) != readTask) {
+					response.Dispose();
+					_ = readTask.ContinueWith(task => _ = task.Exception, CancellationToken.None,
+						TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+						TaskScheduler.Default);
+					throw new OperationCanceledException(cancellationToken);
+				}
+			}
+			return await readTask.ConfigureAwait(false);
+		}
 
 		private static CancellationTokenSource CreateTimeout(int timeoutMilliseconds,
 			CancellationToken cancellationToken)
