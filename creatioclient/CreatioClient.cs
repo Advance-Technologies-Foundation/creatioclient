@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -7,6 +8,7 @@ using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Net.WebSockets;
+using System.Runtime.Serialization;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -18,7 +20,7 @@ namespace Creatio.Client
 
 	#region Class: CreatioClient
 
-	public class CreatioClient : ICreatioClient
+	public class CreatioClient : IAsyncCreatioClient, IDisposable
 	{
 
 		#region Constants: Private
@@ -33,13 +35,17 @@ namespace Creatio.Client
 		private readonly string _userPassword;
 		private readonly bool _isNetCore;
 		private readonly bool _useUntrustedSsl = true;
-		private CookieContainer _authCookie;
+		private readonly CookieContainer _authCookie = new CookieContainer();
 		private string _oauthToken;
 		private int _maxAttempts = 1;
 		private int _delaySec = 1;
 		private RetryPolicy _retryPolicy = RetryPolicy.Simple;
 		private readonly ICredentials _credentials;
 		private string _appUrl;
+		private readonly object _httpClientLock = new object();
+		private volatile HttpClient _httpClient;
+		private volatile CreatioAuthenticationHandler _authenticationHandler;
+		private bool _disposed;
 
 		#endregion
 
@@ -50,18 +56,46 @@ namespace Creatio.Client
 			set => _appUrl = NormalizeUrl(value);
 		}
 
-		private string LoginUrl => AppUrl + @"/ServiceModel/AuthService.svc/Login";
-
-		private string PingUrl => AppUrl + @"/0/ping";
-
 		#endregion
 
 		#region Properties: Internal
 
 		internal CookieContainer AuthCookie {
 			get {
-				InitAuthCookie();
+				EnsureLegacyAuthentication();
 				return _authCookie;
+			}
+		}
+
+		[SuppressMessage("Security", "S4830:Server certificates should be verified during SSL/TLS connections",
+			Justification = "The public useUntrustedSsl option intentionally supports self-signed on-premise Creatio instances.")]
+		private HttpClient HttpClient {
+			get {
+				ThrowIfDisposed();
+				if (_httpClient != null) {
+					return _httpClient;
+				}
+				lock (_httpClientLock) {
+					ThrowIfDisposed();
+					if (_httpClient == null) {
+						HttpClientHandler primaryHandler = new HttpClientHandler {
+							AllowAutoRedirect = false,
+							CookieContainer = _authCookie,
+							UseCookies = true,
+							Credentials = CreateScopedCredentials(_credentials,
+								new Uri(AppUrl.TrimEnd('/') + "/"))
+						};
+						if (_useUntrustedSsl) {
+							primaryHandler.ServerCertificateCustomValidationCallback =
+								(request, certificate, chain, errors) => true; // NOSONAR: opt-in legacy support for self-signed on-premise Creatio.
+						}
+						_authenticationHandler = new CreatioAuthenticationHandler(
+							new Uri(AppUrl), _authCookie, _userName, _userPassword, _credentials,
+							() => _oauthToken, () => TimeZoneOffset, () => SkipPing, _isNetCore, primaryHandler);
+						_httpClient = new HttpClient(_authenticationHandler) { Timeout = Timeout.InfiniteTimeSpan };
+					}
+					return _httpClient;
+				}
 			}
 		}
 
@@ -97,15 +131,6 @@ namespace Creatio.Client
 		/// <returns>The URL without a trailing slash.</returns>
 		private static string NormalizeUrl(string url) {
 			return url.TrimEnd('/');
-		}
-
-		private string BuildLoginRequestData() {
-			int timeZoneOffset = TimeZoneOffset ?? -(int)DateTimeOffset.Now.Offset.TotalMinutes;
-			return JsonConvert.SerializeObject(new {
-				UserName = _userName,
-				UserPassword = _userPassword,
-				TimeZoneOffset = timeZoneOffset
-			});
 		}
 
 		private static async Task<string> GetAccessTokenByClientCredentials(string authApp, string clientId,
@@ -180,128 +205,206 @@ namespace Creatio.Client
 			}
 		}
 
-		private void AddCsrfToken(HttpWebRequest request){
-			Cookie cookie = request.CookieContainer.GetCookies(new Uri(AppUrl))["BPMCSRF"];
-			if (cookie != null) {
-				request.Headers.Add("BPMCSRF", cookie.Value);
-			}
-		}
-
-		private void AddCsrfToken(HttpClient client){
-			Cookie cookie = AuthCookie?.GetCookies(new Uri(AppUrl))["BPMCSRF"];
-			if (cookie != null) {
-				client.DefaultRequestHeaders.Add("BPMCSRF", cookie.Value);
-			}
-		}
-
-		private void ApplyRequestData(HttpWebRequest request, string requestData = null){
-			if (string.IsNullOrEmpty(requestData)) {
-				request.ContentLength = 0;
-				return;
-			}
-			byte[] bytes = Encoding.UTF8.GetBytes(requestData);
-			request.ContentLength = bytes.Length;
-			using (Stream dataStream = request.GetRequestStream()) {
-				dataStream.Write(bytes, 0, bytes.Length);
-			}
-		}
-
 		private string CreateConfigurationServiceUrl(string serviceName, string methodName){
 			return $"{AppUrl}/{WorkspaceId}/rest/{serviceName}/{methodName}";
 		}
 
-		private HttpClientHandler CreateCreatioHandler(ICredentials credentials = null, CookieContainer cookieContainer = null){
-			HttpClientHandler handler = new HttpClientHandler();
-			handler.ClientCertificateOptions = ClientCertificateOption.Manual;
-			handler.ServerCertificateCustomValidationCallback
-				= (httpRequestMessage, cert, certChail, sslPolicyErrors) => true;
-			
-			if(credentials != null) {
-				handler.Credentials = credentials;
+		private async Task EnsureAuthenticatedAsync(int requestTimeout, CancellationToken cancellationToken)
+		{
+			_ = HttpClient;
+			using (CancellationTokenSource timeout = CreateTimeout(requestTimeout, cancellationToken)) {
+				await _authenticationHandler.EnsureAuthenticatedForRequestAsync(timeout.Token).ConfigureAwait(false);
 			}
-			
-			if(cookieContainer != null) {
-				handler.CookieContainer = cookieContainer;
-			}
-			return handler;
 		}
 
-		private HttpWebRequest CreateCreatioRequest(string url, string requestData = null, int requestTimeout = 100000,
-				string method = "POST"){
-			HttpWebRequest request = CreateRequest(url, method);
-			if (_useUntrustedSsl) {
-				request.ServerCertificateValidationCallback = (message, cert, chain, errors) => true;
+		private async Task<HttpResponseMessage> SendAsync(Func<HttpRequestMessage> requestFactory,
+			int requestTimeout, int maxAttempts, int delaySeconds, CancellationToken cancellationToken,
+			HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead,
+			bool authenticationComplete = false)
+		{
+			if (!authenticationComplete) {
+				await EnsureAuthenticatedAsync(100_000, cancellationToken).ConfigureAwait(false);
 			}
-			request.Timeout = requestTimeout;
-			if (!string.IsNullOrEmpty(_oauthToken)) {
-				request.Headers.Add("Authorization", "Bearer " + _oauthToken);
-			} else {
-				request.CookieContainer = AuthCookie;
-				AddCsrfToken(request);
+			if (maxAttempts < 1) {
+				maxAttempts = 1;
 			}
-			ApplyRequestData(request, requestData);
-			return request;
-		}
-
-		private HttpWebRequest CreateRequest(string url, string method = "POST") {
-			// WebRequest.CreateHttp always returns HttpWebRequest; WebRequest.Create can return
-			// FileWebRequest on macOS/Linux for some localhost URLs and trips an InvalidCastException.
-			HttpWebRequest request = WebRequest.CreateHttp(url);
-			if (_useUntrustedSsl) {
-				request.ServerCertificateValidationCallback = (message, cert, chain, errors) => true;
-			}
-			request.ContentType = "application/json; charset=utf-8";
-			request.Method = method;
-			request.KeepAlive = true;
-			return request;
-		}
-
-		private void InitAuthCookie(int requestTimeout = 100000){
-			if (_authCookie == null && string.IsNullOrEmpty(_oauthToken)) {
-				if (SkipPing) {
-					Login(requestTimeout);
-				} else {
-					Login(requestTimeout);
-					TryPingApp(requestTimeout, 3);
-				}
-			}
-		}
-		
-		/// <summary>
-		/// Uses NTLM authentication to login to Creatio
-		/// </summary>
-		private async Task NtlmLogin(int requestTimeout = 100000){
-			CookieContainer cookieContainer = new CookieContainer();
-			const string loginUrl = "/Login/NuiLogin.aspx?ntlmlogin";
-			Uri loginUri = new Uri(AppUrl + loginUrl);
-			
-			using(HttpClientHandler handler = CreateCreatioHandler(_credentials, cookieContainer)) {
-				using(HttpClient client = new HttpClient(handler)) {
-					client.Timeout = TimeSpan.FromMilliseconds(requestTimeout);
-					HttpResponseMessage response = await client.GetAsync(loginUri);
-					if((int)response.StatusCode> 302) {
-						Console.WriteLine("Login Error");
-						string errorMsg = await response.Content.ReadAsStringAsync();
-						Console.WriteLine(errorMsg);
+			int multiplier = 1;
+			for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+				using (HttpRequestMessage request = requestFactory())
+				using (CancellationTokenSource timeout = CreateTimeout(requestTimeout, cancellationToken)) {
+					try {
+						return await HttpClient.SendAsync(request, completionOption, timeout.Token)
+							.ConfigureAwait(false);
+					} catch when (attempt < maxAttempts && !cancellationToken.IsCancellationRequested) {
+						if (_retryPolicy == RetryPolicy.Progressive) {
+							multiplier++;
+						}
+						await Task.Delay(TimeSpan.FromSeconds(delaySeconds * multiplier), cancellationToken)
+							.ConfigureAwait(false);
 					}
 				}
 			}
-			CookieCollection cookies = cookieContainer.GetCookies(loginUri);
-			const string csrfCookieName = "BPMCSRF";
-			foreach (Cookie cookie in cookies) {
-				if(cookie.Name == csrfCookieName && !string.IsNullOrEmpty((cookie.Value))) {
-					_authCookie = cookieContainer;
-				}
+			throw new InvalidOperationException("The HTTP retry loop completed without a response.");
+		}
+
+		private static HttpRequestMessage CreateJsonRequest(HttpMethod method, string url, string requestData,
+			bool omitEmptyContent = false)
+		{
+			HttpRequestMessage request = new HttpRequestMessage(method, url);
+			if (!omitEmptyContent || !string.IsNullOrEmpty(requestData)) {
+				request.Content = new StringContent(requestData ?? string.Empty, Encoding.UTF8, "application/json");
+			}
+			return request;
+		}
+
+		private static CancellationTokenSource CreateTimeout(int timeoutMilliseconds,
+			CancellationToken cancellationToken)
+		{
+			CancellationTokenSource source = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+			if (timeoutMilliseconds != Timeout.Infinite) {
+				source.CancelAfter(timeoutMilliseconds);
+			}
+			return source;
+		}
+
+		private static HttpResponseMessage CreateEmptyResponse() =>
+			new HttpResponseMessage(HttpStatusCode.NoContent) {
+				Content = new StringContent(string.Empty)
+			};
+
+		private static ICredentials CreateScopedCredentials(ICredentials credentials, Uri appUri)
+		{
+			if (credentials == null) {
+				return null;
+			}
+			CredentialCache cache = new CredentialCache();
+			AddScopedCredentials(cache, credentials, appUri);
+			if (appUri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)) {
+				UriBuilder secure = new UriBuilder(appUri) { Scheme = Uri.UriSchemeHttps, Port = 443 };
+				AddScopedCredentials(cache, credentials, secure.Uri);
+			}
+			return cache;
+		}
+
+		private static void AddScopedCredentials(CredentialCache cache, ICredentials credentials, Uri uri)
+		{
+			NetworkCredential negotiate = credentials.GetCredential(uri, "Negotiate");
+			NetworkCredential ntlm = credentials.GetCredential(uri, "NTLM");
+			if (negotiate != null) {
+				cache.Add(uri, "Negotiate", negotiate);
+			}
+			if (ntlm != null) {
+				cache.Add(uri, "NTLM", ntlm);
 			}
 		}
-		
 
-		private void PingApp(int pingTimeout){
-			if (_isNetCore) {
-				return;
+		private void ThrowIfDisposed()
+		{
+			if (_disposed) {
+				throw new ObjectDisposedException(nameof(CreatioClient));
 			}
-			HttpWebRequest pingRequest = CreateCreatioRequest(PingUrl, null, pingTimeout);
-			_ = pingRequest.GetServiceResponse();
+		}
+
+		private void EnsureLegacyAuthentication() => ExecuteLegacyWebRequest(() =>
+			EnsureAuthenticatedAsync(100_000, CancellationToken.None).GetAwaiter().GetResult());
+
+		private static void ExecuteLegacyWebRequest(Action action)
+		{
+			try {
+				action();
+			} catch (CreatioAuthenticationHttpException exception) {
+				using (exception.Response) {
+					throw CreateLegacyProtocolException(exception.Response, exception);
+				}
+			} catch (OperationCanceledException exception) {
+				throw new WebException(exception.Message, exception, WebExceptionStatus.Timeout, null);
+			} catch (HttpRequestException exception) {
+				throw new WebException(exception.Message, exception, WebExceptionStatus.ConnectFailure, null);
+			}
+		}
+
+		private static void EnsureLegacySuccess(HttpResponseMessage response)
+		{
+			if (!response.IsSuccessStatusCode) {
+				throw CreateLegacyProtocolException(response);
+			}
+		}
+
+		private static WebException CreateLegacyProtocolException(HttpResponseMessage response,
+			Exception innerException = null) =>
+			new WebException(
+				$"The remote server returned an error: ({(int)response.StatusCode}) {response.ReasonPhrase}.",
+				innerException, WebExceptionStatus.ProtocolError, LegacyHttpWebResponse.Create(response));
+
+		[SuppressMessage("Reliability", "S3453:Classes should not have only private constructors",
+			Justification = "Instances bypass HttpWebResponse constructors to preserve the legacy concrete response contract without HttpWebRequest.")]
+		private sealed class LegacyHttpWebResponse : HttpWebResponse
+		{
+			private byte[] _body;
+			private WebHeaderCollection _headers;
+			private Uri _responseUri;
+			private HttpStatusCode _statusCode;
+			private string _statusDescription;
+			private string _method;
+
+			#pragma warning disable 0618, SYSLIB0051
+			private LegacyHttpWebResponse(SerializationInfo info, StreamingContext context)
+				: base(info, context) { }
+			#pragma warning restore 0618, SYSLIB0051
+
+			internal static LegacyHttpWebResponse Create(HttpResponseMessage response)
+			{
+				LegacyHttpWebResponse result = (LegacyHttpWebResponse)
+					FormatterServices.GetUninitializedObject(typeof(LegacyHttpWebResponse));
+				result._body = response.Content?.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+					?? Array.Empty<byte>();
+				result._headers = new WebHeaderCollection();
+				result._responseUri = response.RequestMessage?.RequestUri;
+				result._statusCode = response.StatusCode;
+				result._statusDescription = response.ReasonPhrase;
+				result._method = response.RequestMessage?.Method.Method;
+				foreach (KeyValuePair<string, IEnumerable<string>> header in response.Headers) {
+					result._headers[header.Key] = string.Join(", ", header.Value);
+				}
+				if (response.Content != null) {
+					foreach (KeyValuePair<string, IEnumerable<string>> header in response.Content.Headers) {
+						result._headers[header.Key] = string.Join(", ", header.Value);
+					}
+				}
+				return result;
+			}
+
+			public override long ContentLength {
+				get => _body.LongLength;
+				set => throw new NotSupportedException();
+			}
+
+			public override string ContentType {
+				get => _headers[HttpResponseHeader.ContentType];
+				set => throw new NotSupportedException();
+			}
+
+			public override WebHeaderCollection Headers => _headers;
+			public override string Method => _method;
+			public override Uri ResponseUri => _responseUri;
+			public override HttpStatusCode StatusCode => _statusCode;
+			public override string StatusDescription => _statusDescription;
+			public override bool SupportsHeaders => true;
+			public override Stream GetResponseStream() => new MemoryStream(_body, writable: false);
+			public override void Close()
+			{
+				// The compatibility response owns only immutable managed buffers, so there is nothing to release.
+			}
+		}
+
+		private static string ReadLegacyServiceResponse(Task<HttpResponseMessage> responseTask)
+		{
+			try {
+				return ReadResponseBody(responseTask);
+			} catch (AggregateException exception) when (exception.InnerException is HttpRequestException
+				|| exception.InnerException is OperationCanceledException) {
+				return string.Empty;
+			}
 		}
 
 		private void StartListeningSignalR(CancellationToken cancellationToken){
@@ -326,27 +429,10 @@ namespace Creatio.Client
 			thread.Start();
 		}
 
-		private bool TryPingApp(int pingTimeout, int attemtCount){
-			for (int i = 0; i < attemtCount; i++) {
-				try {
-					PingApp(pingTimeout / attemtCount);
-					return true;
-				} catch {
-					Thread.Sleep(1000);
-				}
-			}
-			return false;
-		}
-
 		private HttpRequestMessage CreateUploadRequestMessage(Uri uri, byte[] buffer, long totalBytesRead,
 				int chunkSize, long totalLength, string fileName, string mime) {
 			var msg = new HttpRequestMessage();
 			msg.Method = HttpMethod.Post;
-			if (!string.IsNullOrEmpty(_oauthToken)) {
-				msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _oauthToken);
-			} else {
-				msg.Headers.Add("BPMCSRF", AuthCookie.GetCookies(new Uri(AppUrl))["BPMCSRF"]?.Value);
-			}
 			msg.Content = new ByteArrayContent(buffer);
 			msg.Content.Headers.ContentType = new MediaTypeHeaderValue(mime);
 			msg.Content.Headers.ContentRange = new ContentRangeHeaderValue(totalBytesRead, totalBytesRead + chunkSize - 1, totalLength);
@@ -481,199 +567,224 @@ namespace Creatio.Client
 			string serviceMethod,
 			string requestData,
 			int requestTimeout = 100000){
-			string executeUrl = CreateConfigurationServiceUrl(serviceName, serviceMethod);
-			return ExecutePostRequest(executeUrl, requestData, requestTimeout, _maxAttempts, _delaySec);
+			EnsureLegacyAuthentication();
+			return ReadResponseBody(CallConfigurationServiceAsync(serviceName, serviceMethod, requestData,
+				requestTimeout, CancellationToken.None));
 		}
+
+		public Task<HttpResponseMessage> CallConfigurationServiceAsync(string serviceName,
+			string serviceMethod, string requestData, int requestTimeout = 100000,
+			CancellationToken cancellationToken = default(CancellationToken)) =>
+			ExecutePostRequestAsync(CreateConfigurationServiceUrl(serviceName, serviceMethod), requestData,
+				requestTimeout, _maxAttempts, _delaySec, cancellationToken);
 
 		public void DownloadFile(string url, string filePath, string requestData, int requestTimeout = 100000){
-			HttpWebRequest request = CreateCreatioRequest(url, requestData, requestTimeout);
-			request.SaveToFile(filePath);
+			ExecuteLegacyWebRequest(() => {
+				using (HttpResponseMessage response = DownloadFileAsync(url, filePath, requestData, requestTimeout,
+					CancellationToken.None).GetAwaiter().GetResult()) {
+					EnsureLegacySuccess(response);
+				}
+			});
 		}
+
+		public Task<HttpResponseMessage> DownloadFileAsync(string url, string filePath, string requestData,
+			int requestTimeout = 100000, CancellationToken cancellationToken = default(CancellationToken)) =>
+			DownloadToFileAsync(HttpMethod.Post, url, filePath, requestData, requestTimeout, cancellationToken);
 
 		public void DownloadFileByGet(string url, string filePath, int requestTimeout = 100000) {
-			Retry<bool>(() => {
-				HttpWebRequest request = CreateCreatioRequest(url, null, requestTimeout, "GET");
-				request.SaveToFile(filePath);
-				return true;
-			}, _maxAttempts, _delaySec, _retryPolicy);
+			ExecuteLegacyWebRequest(() => {
+				using (HttpResponseMessage response = DownloadFileByGetAsync(url, filePath, requestTimeout,
+					CancellationToken.None).GetAwaiter().GetResult()) {
+					EnsureLegacySuccess(response);
+				}
+			});
 		}
+
+		public Task<HttpResponseMessage> DownloadFileByGetAsync(string url, string filePath,
+			int requestTimeout = 100000, CancellationToken cancellationToken = default(CancellationToken)) =>
+			DownloadToFileAsync(HttpMethod.Get, url, filePath, null, requestTimeout, cancellationToken);
 
 		public string ExecuteGetRequest(string url, int requestTimeout = 100000, int maxAttempts = 1, int delaySec = 1) {
-			return Retry<string>(() => {
-				HttpWebRequest request = CreateCreatioRequest(url, null, requestTimeout);
-				request.Method = "GET";
-				return request.GetServiceResponse();
-			}, maxAttempts, delaySec, _retryPolicy);
+			EnsureLegacyAuthentication();
+			try {
+				return ReadResponseBody(SendAsync(
+					() => CreateJsonRequest(HttpMethod.Get, url, null, omitEmptyContent: true),
+					requestTimeout, 1, delaySec, CancellationToken.None), unwrapTaskException: true);
+			} catch (HttpRequestException) {
+				return string.Empty;
+			} catch (TaskCanceledException) {
+				return string.Empty;
+			}
 		}
+
+		public Task<HttpResponseMessage> ExecuteGetRequestAsync(string url, int requestTimeout = 100000,
+			int maxAttempts = 1, int delaySec = 1,
+			CancellationToken cancellationToken = default(CancellationToken)) =>
+			SendAsync(() => CreateJsonRequest(HttpMethod.Get, url, null, omitEmptyContent: true),
+				requestTimeout, maxAttempts, delaySec, cancellationToken);
 
 		public string ExecutePostRequest(string url, string requestData, int requestTimeout = 10000, int maxAttempts = 1, int delaySec = 1){
-			return Retry<string>(() => {
-				using( var handler = CreateCreatioHandler()) {
-					if (_oauthToken != null) {
-						using (HttpClient client = new HttpClient(handler)) {
-							client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _oauthToken);
-							StringContent stringContent = new StringContent(requestData, Encoding.UTF8, "application/json");
-							client.Timeout = TimeSpan.FromMilliseconds(requestTimeout);
-							HttpResponseMessage response = client.PostAsync(url, stringContent).Result;
-							string content = response.Content.ReadAsStringAsync().Result;
-							return content;
-						}
-					}
-					handler.CookieContainer = AuthCookie;
-					using (HttpClient client = new HttpClient(handler)) {
-						AddCsrfToken(client);
-						StringContent stringContent = new StringContent(requestData, Encoding.UTF8, "application/json");
-						client.Timeout = TimeSpan.FromMilliseconds(requestTimeout); 
-						HttpResponseMessage response = client.PostAsync(url, stringContent).Result;
-						string content = response.Content.ReadAsStringAsync().Result;
-						return content;
-					}
-				}
-			}, maxAttempts, delaySec, _retryPolicy);
+			EnsureLegacyAuthentication();
+			return ReadResponseBody(ExecutePostRequestAsync(url, requestData, requestTimeout, maxAttempts,
+				delaySec, CancellationToken.None));
 		}
 
-			public string ExecuteDeleteRequest(string url, string requestData, int requestTimeout = 10000, int maxAttempts = 1, int delaySec = 1){
-				return Retry<string>(() => {
-					using (var handler = CreateCreatioHandler()) {
-						HttpRequestMessage BuildRequest(HttpClient client) {
-							HttpRequestMessage message = new HttpRequestMessage(HttpMethod.Delete, url);
-							if (!string.IsNullOrEmpty(requestData)) {
-								message.Content = new StringContent(requestData, Encoding.UTF8, "application/json");
-							}
-							client.Timeout = TimeSpan.FromMilliseconds(requestTimeout);
-							return message;
-						}
-
-						if (_oauthToken != null) {
-							using (HttpClient client = new HttpClient(handler)) {
-								client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _oauthToken);
-								HttpResponseMessage response = client.SendAsync(BuildRequest(client)).Result;
-								return response.Content.ReadAsStringAsync().Result;
-							}
-						}
-
-						handler.CookieContainer = AuthCookie;
-						using (HttpClient client = new HttpClient(handler)) {
-							AddCsrfToken(client);
-							HttpResponseMessage response = client.SendAsync(BuildRequest(client)).Result;
-							return response.Content.ReadAsStringAsync().Result;
-						}
-					}
-				}, maxAttempts, delaySec, _retryPolicy);
+		public Task<HttpResponseMessage> ExecutePostRequestAsync(string url, string requestData,
+			int requestTimeout = 100000, int maxAttempts = 1, int delaySec = 1,
+			CancellationToken cancellationToken = default(CancellationToken))
+		{
+			if (requestData == null) {
+				throw new ArgumentNullException(nameof(requestData));
 			}
-
-		private string ExecuteHttpRequest(HttpMethod method, string url, string requestData, int requestTimeout,
-			int maxAttempts, int delaySec) {
-			return Retry<string>(() => {
-				using (var handler = CreateCreatioHandler()) {
-					HttpRequestMessage BuildRequest(HttpClient client) {
-						HttpRequestMessage message = new HttpRequestMessage(method, url) {
-							Content = new StringContent(requestData ?? string.Empty, Encoding.UTF8, "application/json")
-						};
-						client.Timeout = TimeSpan.FromMilliseconds(requestTimeout);
-						return message;
-					}
-
-					if (_oauthToken != null) {
-						using (HttpClient client = new HttpClient(handler)) {
-							client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _oauthToken);
-							HttpResponseMessage response = client.SendAsync(BuildRequest(client)).Result;
-							return response.Content.ReadAsStringAsync().Result;
-						}
-					}
-
-					handler.CookieContainer = AuthCookie;
-					using (HttpClient client = new HttpClient(handler)) {
-						AddCsrfToken(client);
-						HttpResponseMessage response = client.SendAsync(BuildRequest(client)).Result;
-						return response.Content.ReadAsStringAsync().Result;
-					}
-				}
-			}, maxAttempts, delaySec, _retryPolicy);
+			return SendAsync(() => CreateJsonRequest(HttpMethod.Post, url, requestData), requestTimeout,
+				maxAttempts, delaySec, cancellationToken);
 		}
+
+		public string ExecuteDeleteRequest(string url, string requestData, int requestTimeout = 10000,
+			int maxAttempts = 1, int delaySec = 1)
+		{
+			EnsureLegacyAuthentication();
+			return ReadResponseBody(ExecuteDeleteRequestAsync(url, requestData, requestTimeout, maxAttempts,
+				delaySec, CancellationToken.None));
+		}
+
+		public Task<HttpResponseMessage> ExecuteDeleteRequestAsync(string url, string requestData,
+			int requestTimeout = 10000, int maxAttempts = 1, int delaySec = 1,
+			CancellationToken cancellationToken = default(CancellationToken)) =>
+			SendAsync(() => CreateJsonRequest(HttpMethod.Delete, url, requestData, omitEmptyContent: true),
+				requestTimeout, maxAttempts, delaySec, cancellationToken);
 
 		public string ExecutePatchRequest(string url, string requestData, int requestTimeout = 10000, int maxAttempts = 1, int delaySec = 1){
-			// netstandard2.0 has no HttpMethod.Patch; the string ctor is the portable form.
-			return ExecuteHttpRequest(new HttpMethod("PATCH"), url, requestData, requestTimeout, maxAttempts, delaySec);
+			EnsureLegacyAuthentication();
+			return ReadResponseBody(ExecutePatchRequestAsync(url, requestData, requestTimeout, maxAttempts,
+				delaySec, CancellationToken.None));
 		}
+
+		public Task<HttpResponseMessage> ExecutePatchRequestAsync(string url, string requestData,
+			int requestTimeout = 100000, int maxAttempts = 1, int delaySec = 1,
+			CancellationToken cancellationToken = default(CancellationToken)) =>
+			SendAsync(() => CreateJsonRequest(new HttpMethod("PATCH"), url, requestData), requestTimeout,
+				maxAttempts, delaySec, cancellationToken);
 
 		public string ExecutePutRequest(string url, string requestData, int requestTimeout = 10000, int maxAttempts = 1, int delaySec = 1){
-			return ExecuteHttpRequest(HttpMethod.Put, url, requestData, requestTimeout, maxAttempts, delaySec);
+			EnsureLegacyAuthentication();
+			return ReadResponseBody(ExecutePutRequestAsync(url, requestData, requestTimeout, maxAttempts,
+				delaySec, CancellationToken.None));
 		}
 
-		static T Retry<T>(Func<T> func, int maxAttempts, int delaySeconds, RetryPolicy retryPolicy = RetryPolicy.Simple) {
-			if (maxAttempts < 1) maxAttempts = 1;   // a 0/negative count must never silently skip the request
-			int attempts = 0;
-			int multiplicator = 1; 
-			while (attempts < maxAttempts) {
-				try {
-					return func();
-				} catch (Exception ex) {
-					attempts++;
-					if (retryPolicy == RetryPolicy.Progressive) {
-						multiplicator++;
-					} 
-					if (attempts < maxAttempts) {
-						Thread.Sleep(delaySeconds * 1000 * multiplicator);
-					} else {
-						throw;					}
-				}
+		public Task<HttpResponseMessage> ExecutePutRequestAsync(string url, string requestData,
+			int requestTimeout = 100000, int maxAttempts = 1, int delaySec = 1,
+			CancellationToken cancellationToken = default(CancellationToken)) =>
+			SendAsync(() => CreateJsonRequest(HttpMethod.Put, url, requestData), requestTimeout,
+				maxAttempts, delaySec, cancellationToken);
+
+		private static string ReadResponseBody(Task<HttpResponseMessage> responseTask,
+			bool unwrapTaskException = false)
+		{
+			HttpResponseMessage response = unwrapTaskException
+				? responseTask.GetAwaiter().GetResult()
+				: responseTask.Result;
+			using (response) {
+				return unwrapTaskException
+					? response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+					: response.Content.ReadAsStringAsync().Result;
 			}
-			return default(T);
+		}
+
+		private async Task<HttpResponseMessage> DownloadToFileAsync(HttpMethod method, string url, // NOSONAR: retry/streaming branches are kept together and fully characterized.
+			string filePath, string requestData, int requestTimeout, CancellationToken cancellationToken)
+		{
+			await EnsureAuthenticatedAsync(100_000, cancellationToken).ConfigureAwait(false);
+			int maxAttempts = Math.Max(1, _maxAttempts);
+			int multiplier = 1;
+			for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+				using (CancellationTokenSource timeout = CreateTimeout(requestTimeout, cancellationToken)) {
+					HttpResponseMessage response = null;
+					try {
+						response = await SendAsync(
+							() => CreateJsonRequest(method, url, requestData, omitEmptyContent: method == HttpMethod.Get),
+							Timeout.Infinite, 1, _delaySec, timeout.Token,
+							HttpCompletionOption.ResponseHeadersRead, authenticationComplete: true)
+							.ConfigureAwait(false);
+						if (!response.IsSuccessStatusCode) {
+							if (attempt == maxAttempts) {
+								await BufferResponseContentAsync(response, timeout.Token).ConfigureAwait(false);
+								return response;
+							}
+							response.Dispose();
+							response = null;
+						} else {
+							Stream content = await response.Content.ReadAsStreamAsync().ConfigureAwait(false); // NOSONAR: netstandard2.0 has no token overload; reads below use the timeout token.
+							using (FileStream stream = new FileStream(filePath, FileMode.Create, FileAccess.Write,
+								FileShare.None, 81920, true)) {
+								byte[] buffer = new byte[81920];
+								int read;
+								while ((read = await content.ReadAsync(buffer, 0, buffer.Length, timeout.Token)
+									.ConfigureAwait(false)) != 0) {
+									await stream.WriteAsync(buffer, 0, read, timeout.Token).ConfigureAwait(false);
+								}
+							}
+							return response;
+						}
+					} catch when (attempt < maxAttempts && !cancellationToken.IsCancellationRequested) {
+						response?.Dispose();
+					} catch {
+						response?.Dispose();
+						throw;
+					}
+				}
+				if (_retryPolicy == RetryPolicy.Progressive) {
+					multiplier++;
+				}
+				await Task.Delay(TimeSpan.FromSeconds(_delaySec * multiplier), cancellationToken)
+					.ConfigureAwait(false);
+			}
+			throw new InvalidOperationException("The download retry loop completed without a response.");
+		}
+
+		private static async Task BufferResponseContentAsync(HttpResponseMessage response,
+			CancellationToken cancellationToken)
+		{
+			if (response.Content == null) {
+				return;
+			}
+			HttpContent original = response.Content;
+			List<KeyValuePair<string, IEnumerable<string>>> headers = original.Headers.ToList();
+			using (Stream source = await original.ReadAsStreamAsync().ConfigureAwait(false)) // NOSONAR: netstandard2.0 has no token overload; reads below use cancellationToken.
+			using (MemoryStream buffer = new MemoryStream()) {
+				byte[] bytes = new byte[81920];
+				int read;
+				while ((read = await source.ReadAsync(bytes, 0, bytes.Length, cancellationToken)
+					.ConfigureAwait(false)) != 0) {
+					await buffer.WriteAsync(bytes, 0, read, cancellationToken).ConfigureAwait(false);
+				}
+				ByteArrayContent buffered = new ByteArrayContent(buffer.ToArray());
+				foreach (KeyValuePair<string, IEnumerable<string>> header in headers) {
+					buffered.Headers.TryAddWithoutValidation(header.Key, header.Value);
+				}
+				response.Content = buffered;
+			}
+			original.Dispose();
 		}
 
 		public void Login(){
-			if(_credentials != null) {
-				NtlmLogin().GetAwaiter().GetResult();
-				return;
-			}
-
-			string authData = BuildLoginRequestData();
-			HttpWebRequest request = CreateRequest(LoginUrl);
-			_authCookie = new CookieContainer();
-			request.CookieContainer = _authCookie;
-			ApplyRequestData(request, authData);
-			using (HttpWebResponse response = (HttpWebResponse)request.GetResponse()) {
-				if (response.StatusCode == HttpStatusCode.OK) {
-					using (StreamReader reader = new StreamReader(response.GetResponseStream())) {
-						string responseMessage = reader.ReadToEnd();
-						if (responseMessage.Contains("\"Code\":1")) {
-							throw new UnauthorizedAccessException($"Unauthorized {_userName} for {AppUrl}");
-						}
-					}
-					string authCookieName = ".ASPXAUTH";
-					string authCookieValue = response.Cookies[authCookieName].Value;
-					_authCookie.Add(new Uri(AppUrl), new Cookie(authCookieName, authCookieValue));
-				}
-			}
+			Login(100_000);
 		}
 
 		public void Login(int requestTimeout){
-			
-			if(_credentials != null) {
-				NtlmLogin().GetAwaiter().GetResult();
-				return;
-			}
-			
-			string authData = BuildLoginRequestData();
-			HttpWebRequest request = CreateRequest(LoginUrl);
-			request.Timeout = requestTimeout;
-			_authCookie = new CookieContainer();
-			request.CookieContainer = _authCookie;
-			ApplyRequestData(request, authData);
-			using (HttpWebResponse response = (HttpWebResponse)request.GetResponse()) {
-				if (response.StatusCode == HttpStatusCode.OK) {
-					using (StreamReader reader = new StreamReader(response.GetResponseStream())) {
-						string responseMessage = reader.ReadToEnd();
-						if (responseMessage.Contains("\"Code\":1")) {
-							throw new UnauthorizedAccessException($"Unauthorized {_userName} for {AppUrl}");
-						}
-					}
-					string authCookieName = ".ASPXAUTH";
-					string authCookieValue = response.Cookies[authCookieName].Value;
-					_authCookie.Add(new Uri(AppUrl), new Cookie(authCookieName, authCookieValue));
+			ExecuteLegacyWebRequest(() => {
+				using (HttpResponseMessage response = LoginAsync(requestTimeout, CancellationToken.None)
+					.GetAwaiter().GetResult()) {
+					EnsureLegacySuccess(response);
 				}
-			}
+			});
+		}
+
+		public Task<HttpResponseMessage> LoginAsync(int requestTimeout = 100000,
+			CancellationToken cancellationToken = default(CancellationToken))
+		{
+			_ = HttpClient;
+			return _authenticationHandler.LoginAsync(requestTimeout, cancellationToken);
 		}
 
 		public void StartListening(CancellationToken cancellationToken){
@@ -686,7 +797,6 @@ namespace Creatio.Client
 
 		public string UploadAlmFileByChunk(string url, string filePath) {
 			FileInfo fileInfo = new FileInfo(filePath);
-			Stream memStream = new MemoryStream();
 			string result = "";
 			using (FileStream fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read)) {
 				int chunkSize = 1024*1024;
@@ -711,40 +821,73 @@ namespace Creatio.Client
 			return result;
 		}
 
-		public string UploadChunkAlmFile(string url, byte[] data, int downloadedSize, int totalSize) {
-			HttpWebRequest request = CreateCreatioRequest(url);
-			request.ContentType = "Content-Type: application/octet-stream";
-			request.ContentLength = data.Length;
-			int startByte = downloadedSize == 0 ? 0 : downloadedSize + 1;
-			request.Headers.Add("Content-Range", $"bytes {startByte}-{downloadedSize + data.Length}/{totalSize}");
-			using (Stream requestStream = request.GetRequestStream()) {
-				requestStream.Write(data, 0, data.Length);
+		public async Task<HttpResponseMessage> UploadAlmFileByChunkAsync(string url, string filePath,
+			int requestTimeout = 100000, CancellationToken cancellationToken = default(CancellationToken))
+		{
+			FileInfo fileInfo = new FileInfo(filePath);
+			int totalSize = checked((int)fileInfo.Length);
+			int uploadedSize = 0;
+			HttpResponseMessage lastResponse = null;
+			using (FileStream stream = new FileStream(filePath, FileMode.Open, FileAccess.Read,
+				FileShare.Read, 81920, true)) {
+				byte[] buffer = new byte[1024 * 1024];
+				int bytesRead;
+				while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken)
+					.ConfigureAwait(false)) != 0) {
+					byte[] chunk = new byte[bytesRead];
+					Array.Copy(buffer, chunk, bytesRead);
+					HttpResponseMessage response = await UploadChunkAlmFileAsync(url, chunk, uploadedSize,
+						totalSize, requestTimeout, cancellationToken).ConfigureAwait(false);
+					lastResponse?.Dispose();
+					lastResponse = response;
+					uploadedSize += bytesRead;
+					if (!response.IsSuccessStatusCode) {
+						return response;
+					}
+				}
 			}
-			return request.GetServiceResponse();
+			return lastResponse ?? CreateEmptyResponse();
+		}
+
+		public string UploadChunkAlmFile(string url, byte[] data, int downloadedSize, int totalSize) {
+			EnsureLegacyAuthentication();
+			return ReadLegacyServiceResponse(UploadChunkAlmFileAsync(url, data, downloadedSize, totalSize,
+				100_000, CancellationToken.None));
+		}
+
+		public Task<HttpResponseMessage> UploadChunkAlmFileAsync(string url, byte[] data, int downloadedSize,
+			int totalSize, int requestTimeout = 100000,
+			CancellationToken cancellationToken = default(CancellationToken))
+		{
+			int startByte = downloadedSize == 0 ? 0 : downloadedSize + 1;
+			return SendAsync(() => {
+				HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, url) {
+					Content = new ByteArrayContent(data)
+				};
+				request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+				request.Content.Headers.TryAddWithoutValidation("Content-Range",
+					$"bytes {startByte}-{downloadedSize + data.Length}/{totalSize}");
+				return request;
+			}, requestTimeout, _maxAttempts, _delaySec, cancellationToken);
 		}
 
 		public string UploadAlmFile(string url, string filePath){
-			FileInfo fileInfo = new FileInfo(filePath);
-			Stream memStream = new MemoryStream();
-			using (FileStream fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read)) {
-				byte[] buffer = new byte[1024];
-				int bytesRead = 0;
-				while ((bytesRead = fileStream.Read(buffer, 0, buffer.Length)) != 0) {
-					memStream.Write(buffer, 0, bytesRead);
-				}
-			}
-			string fileName = fileInfo.Name;
-			HttpWebRequest request = CreateCreatioRequest(url);
-			request.ContentType = "Content-Type: application/octet-stream";
-			request.ContentLength = memStream.Length;
-			using (Stream requestStream = request.GetRequestStream()) {
-				memStream.Position = 0;
-				byte[] tempBuffer = new byte[memStream.Length];
-				memStream.Read(tempBuffer, 0, tempBuffer.Length);
-				memStream.Close();
-				requestStream.Write(tempBuffer, 0, tempBuffer.Length);
-			}
-			return request.GetServiceResponse();
+			EnsureLegacyAuthentication();
+			return ReadLegacyServiceResponse(UploadAlmFileAsync(url, filePath, 100_000, CancellationToken.None));
+		}
+
+		public async Task<HttpResponseMessage> UploadAlmFileAsync(string url, string filePath,
+			int requestTimeout = 100000, CancellationToken cancellationToken = default(CancellationToken))
+		{
+			return await SendAsync(() => {
+				FileStream stream = new FileStream(filePath, FileMode.Open, FileAccess.Read,
+					FileShare.Read, 81920, true);
+				HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, url) {
+					Content = new StreamContent(stream)
+				};
+				request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+				return request;
+			}, requestTimeout, _maxAttempts, _delaySec, cancellationToken).ConfigureAwait(false);
 		}
 
 		private string GetMimeTypeFromFileExtension(string fileExtension){
@@ -795,154 +938,116 @@ namespace Creatio.Client
 		}
 		
 		public string UploadStaticFile(string url, string filePath, string folderName, int defaultTimeout = 100_000, int chunkSize = 1 * 1024 * 1024){
+			EnsureLegacyAuthentication();
 			return UploadStaticFileAsync(url, filePath, folderName, defaultTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
 		}
 		
 		public async Task<string> UploadStaticFileAsync(string url, string filePath, string folderName, int defaultTimeout = 100_000, int chunkSize = 30 * 1024 * 1024){
-			
-			long totalBytesRead = 0;
-			HttpClient client = new HttpClient(CreateCreatioHandler(cookieContainer: AuthCookie));
-			FileInfo fileInfo = new FileInfo(filePath);
-			string fileName = fileInfo.Name;
-			string mime = GetMimeTypeFromFileExtension(fileInfo.Extension);
-			
-			string returnResult = string.Empty;
-			using (FileStream fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read)) {
-				while(fileStream.Length > totalBytesRead) {
-					string url2 = url  +
-						"&fileName=" + fileName + $"folderName={folderName}";
-					Uri.TryCreate(url2, UriKind.Absolute, out Uri uri);
-					
-					if(fileStream.Length - totalBytesRead < chunkSize) {
-						chunkSize = (int)(fileStream.Length - totalBytesRead);
-					}
-					byte[] buffer = new byte[chunkSize];
-					var bytesRead = await fileStream.ReadAsync(buffer, 0, chunkSize);
-					var msg = new HttpRequestMessage();
-					msg.Method = HttpMethod.Post;
-					
-					if(!string.IsNullOrEmpty(_oauthToken)) {
-						msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _oauthToken);
-						
-					}else {
-						msg.Headers.Add("BPMCSRF", AuthCookie.GetCookies(new Uri(AppUrl))["BPMCSRF"]?.Value);
-					}
-					msg.Content = new ByteArrayContent(buffer);
-					msg.Content.Headers.ContentType = new MediaTypeHeaderValue(mime);
-					msg.Content.Headers.ContentRange = new ContentRangeHeaderValue(totalBytesRead, totalBytesRead+chunkSize -1, fileStream.Length);
-					msg.Content.Headers.ContentDisposition = new ContentDispositionHeaderValue("attachment") {
-						FileName = fileName,
-					};
-					msg.RequestUri = uri;
-					totalBytesRead += bytesRead;
-					
-					HttpResponseMessage response  = await client.SendAsync(msg);
-					string resultString = await response.Content.ReadAsStringAsync();
-					returnResult = resultString;
-					FileUploadResponseDto dto = JsonConvert.DeserializeObject<FileUploadResponseDto>(resultString);
-					if (response.StatusCode == HttpStatusCode.OK && dto.Success) {
-						int precentageUploaded = (int)((totalBytesRead * 100) / fileStream.Length);
-						Console.WriteLine($"Chunk upload OK [{precentageUploaded} %]: {totalBytesRead} of {fileStream.Length}");
-					} else {
-						Console.WriteLine($"Error: {dto.ErrorInfo?.ErrorCode} {dto.ErrorInfo?.Message}");
-					}
-					response.EnsureSuccessStatusCode();
-				}
+			using (HttpResponseMessage response = await UploadStaticFileAsync(url, filePath, folderName,
+				defaultTimeout, chunkSize, CancellationToken.None).ConfigureAwait(false)) {
+				string result = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+				response.EnsureSuccessStatusCode();
+				return result;
 			}
-			return returnResult;
 		}
 
+		public Task<HttpResponseMessage> UploadStaticFileAsync(string url, string filePath, string folderName,
+			int defaultTimeout, int chunkSize, CancellationToken cancellationToken) =>
+			UploadChunksAsync(filePath, defaultTimeout, chunkSize, cancellationToken,
+				(fileName, mime, length) => url + "&fileName=" + fileName + $"folderName={folderName}");
+
 		public string UploadFile(string url, string filePath, int defaultTimeout = 100_000, int chunkSize = 1 * 1024 * 1024){
+			EnsureLegacyAuthentication();
 			return UploadFileAsync(url, filePath, defaultTimeout).ConfigureAwait(false).GetAwaiter().GetResult();
 		}
 		public async Task<string> UploadFileAsync(string url, string filePath, int defaultTimeout = 100_000, int chunkSize = 1 * 1024 * 1024){
-			
-			long totalBytesRead = 0;
-			HttpClient client = new HttpClient(CreateCreatioHandler(cookieContainer: AuthCookie));
+			using (HttpResponseMessage response = await UploadFileAsync(url, filePath, defaultTimeout,
+				chunkSize, CancellationToken.None).ConfigureAwait(false)) {
+				string result = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+				response.EnsureSuccessStatusCode();
+				return result;
+			}
+		}
+
+		public Task<HttpResponseMessage> UploadFileAsync(string url, string filePath, int defaultTimeout,
+			int chunkSize, CancellationToken cancellationToken) =>
+			UploadChunksAsync(filePath, defaultTimeout, chunkSize, cancellationToken,
+				(fileName, mime, length) => url + "?totalFileLength=" + length +
+					"&fileName=" + fileName + $"&mimeType={Uri.EscapeDataString(mime)}");
+
+		private async Task<HttpResponseMessage> UploadChunksAsync(string filePath, int requestTimeout,
+			int chunkSize, CancellationToken cancellationToken, Func<string, string, long, string> buildUrl)
+		{
 			FileInfo fileInfo = new FileInfo(filePath);
 			string fileName = fileInfo.Name;
 			string mime = GetMimeTypeFromFileExtension(fileInfo.Extension);
-			
-			string returnResult = string.Empty;
-			using (FileStream fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read)) {
-				while(fileStream.Length > totalBytesRead) {
-					string url2 = url + "?totalFileLength=" + fileStream.Length +
-						"&fileName=" + fileName + $"&mimeType={Uri.EscapeDataString(mime)}";
-					Uri.TryCreate(url2, UriKind.Absolute, out Uri uri);
-					
-					if(fileStream.Length - totalBytesRead < chunkSize) {
-						chunkSize = (int)(fileStream.Length - totalBytesRead);
-					}
-					byte[] buffer = new byte[chunkSize];
-					var bytesRead = await fileStream.ReadAsync(buffer, 0, chunkSize);
-					var msg = new HttpRequestMessage();
-					msg.Method = HttpMethod.Post;
-					
-					if(!string.IsNullOrEmpty(_oauthToken)) {
-						msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _oauthToken);
-						
-					}else {
-						msg.Headers.Add("BPMCSRF", AuthCookie.GetCookies(new Uri(AppUrl))["BPMCSRF"]?.Value);
-					}
-					msg.Content = new ByteArrayContent(buffer);
-					msg.Content.Headers.ContentType = new MediaTypeHeaderValue(mime);
-					msg.Content.Headers.ContentRange = new ContentRangeHeaderValue(totalBytesRead, totalBytesRead+chunkSize -1, fileStream.Length);
-					msg.Content.Headers.ContentDisposition = new ContentDispositionHeaderValue("attachment") {
-						FileName = fileName,
-					};
-					msg.RequestUri = uri;
+			long totalBytesRead = 0;
+			HttpResponseMessage lastResponse = null;
+			using (FileStream stream = new FileStream(filePath, FileMode.Open, FileAccess.Read,
+				FileShare.Read, 81920, true)) {
+				while (stream.Length > totalBytesRead) {
+					int currentChunkSize = (int)Math.Min(chunkSize, stream.Length - totalBytesRead);
+					byte[] buffer = new byte[currentChunkSize];
+					int bytesRead = await stream.ReadAsync(buffer, 0, currentChunkSize, cancellationToken)
+						.ConfigureAwait(false);
+					long chunkStart = totalBytesRead;
 					totalBytesRead += bytesRead;
-					
-					HttpResponseMessage response  = await client.SendAsync(msg);
-					string resultString = await response.Content.ReadAsStringAsync();
-					returnResult = resultString;
-					FileUploadResponseDto dto = JsonConvert.DeserializeObject<FileUploadResponseDto>(resultString);
-					if (response.StatusCode == HttpStatusCode.OK && dto.Success) {
-						int precentageUploaded = (int)((totalBytesRead * 100) / fileStream.Length);
-						Console.WriteLine($"Chunk upload OK [{precentageUploaded} %]: {totalBytesRead} of {fileStream.Length}");
-					} else {
-						Console.WriteLine($"Error: {dto.ErrorInfo?.ErrorCode} {dto.ErrorInfo?.Message}");
+					Uri uri = new Uri(buildUrl(fileName, mime, stream.Length));
+					HttpResponseMessage response = await SendAsync(
+						() => CreateUploadRequestMessage(uri, buffer, chunkStart, bytesRead, stream.Length,
+							fileName, mime), requestTimeout, _maxAttempts, _delaySec, cancellationToken)
+						.ConfigureAwait(false);
+					lastResponse?.Dispose();
+					lastResponse = response;
+					if (!response.IsSuccessStatusCode) {
+						return response;
 					}
-					response.EnsureSuccessStatusCode();
+					string result = await response.Content.ReadAsStringAsync().ConfigureAwait(false); // NOSONAR: SendAsync already buffered content under cancellation.
+					HandleUploadResponse(response, result, totalBytesRead, stream.Length);
 				}
 			}
-			return returnResult;
+			return lastResponse ?? CreateEmptyResponse();
 		}
 		
 		public string UploadFile_original(string url, string filePath, int defaultTimeout = 100000){
+			EnsureLegacyAuthentication();
+			return ReadLegacyServiceResponse(UploadFile_originalAsync(url, filePath, defaultTimeout,
+				CancellationToken.None));
+		}
+
+		public async Task<HttpResponseMessage> UploadFile_originalAsync(string url, string filePath,
+			int defaultTimeout = 100000, CancellationToken cancellationToken = default(CancellationToken))
+		{
 			FileInfo fileInfo = new FileInfo(filePath);
 			string fileName = fileInfo.Name;
-			
 			string boundary = DateTime.Now.Ticks.ToString("x");
-			HttpWebRequest request = CreateCreatioRequest(url);
-			request.ContentType = "multipart/form-data; boundary=" + boundary;
-			Stream memStream = new MemoryStream();
-			byte[] boundarybytes = Encoding.ASCII.GetBytes("\r\n--" + boundary + "\r\n");
-			byte[] endBoundaryBytes = Encoding.ASCII.GetBytes("\r\n--" + boundary + "--");
+			using (MemoryStream content = new MemoryStream()) {
+				byte[] boundaryBytes = Encoding.ASCII.GetBytes("\r\n--" + boundary + "\r\n");
+				byte[] endBoundaryBytes = Encoding.ASCII.GetBytes("\r\n--" + boundary + "--");
 			string headerTemplate =
 				"Content-Disposition: form-data; name=\"{0}\"; filename=\"{1}\"\r\n" +
 				"Content-Type: application/octet-stream\r\n\r\n";
-			memStream.Write(boundarybytes, 0, boundarybytes.Length);
-			string header = string.Format(headerTemplate, "files", fileName);
-			byte[] headerbytes = Encoding.UTF8.GetBytes(header);
-			memStream.Write(headerbytes, 0, headerbytes.Length);
-			using (FileStream fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read)) {
-				byte[] buffer = new byte[1024];
-				int bytesRead = 0;
-				while ((bytesRead = fileStream.Read(buffer, 0, buffer.Length)) != 0) {
-					memStream.Write(buffer, 0, bytesRead);
+				await content.WriteAsync(boundaryBytes, 0, boundaryBytes.Length, cancellationToken)
+					.ConfigureAwait(false);
+				byte[] headerBytes = Encoding.UTF8.GetBytes(string.Format(headerTemplate, "files", fileName));
+				await content.WriteAsync(headerBytes, 0, headerBytes.Length, cancellationToken)
+					.ConfigureAwait(false);
+				using (FileStream fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read,
+					FileShare.Read, 81920, true)) {
+					await fileStream.CopyToAsync(content, 81920, cancellationToken).ConfigureAwait(false);
 				}
+				await content.WriteAsync(endBoundaryBytes, 0, endBoundaryBytes.Length, cancellationToken)
+					.ConfigureAwait(false);
+				byte[] body = content.ToArray();
+				return await SendAsync(() => {
+					HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, url) {
+						Content = new ByteArrayContent(body)
+					};
+					request.Content.Headers.TryAddWithoutValidation("Content-Type",
+						"multipart/form-data; boundary=" + boundary);
+					return request;
+				}, defaultTimeout, _maxAttempts, _delaySec, cancellationToken).ConfigureAwait(false);
 			}
-			memStream.Write(endBoundaryBytes, 0, endBoundaryBytes.Length);
-			request.ContentLength = memStream.Length;
-			using (Stream requestStream = request.GetRequestStream()) {
-				memStream.Position = 0;
-				byte[] tempBuffer = new byte[memStream.Length];
-				memStream.Read(tempBuffer, 0, tempBuffer.Length);
-				memStream.Close();
-				requestStream.Write(tempBuffer, 0, tempBuffer.Length);
-			}
-			return request.GetServiceResponse();
 		}
 
 		/// <inheritdoc/>
@@ -955,36 +1060,50 @@ namespace Creatio.Client
 		/// <inheritdoc/>
 		public async Task<string> UploadAttachmentAsync(FileUploadInfo uploadInfo, int timeout = 100000,
 			int chunkSize = 1048576) {
+			using (HttpResponseMessage response = await UploadAttachmentResponseAsync(uploadInfo, timeout,
+				chunkSize, CancellationToken.None).ConfigureAwait(false)) {
+				string result = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+				response.EnsureSuccessStatusCode();
+				return result;
+			}
+		}
+
+		public async Task<HttpResponseMessage> UploadAttachmentResponseAsync(FileUploadInfo uploadInfo,
+			int timeout = 100000, int chunkSize = 1048576,
+			CancellationToken cancellationToken = default(CancellationToken))
+		{
 			ValidateUploadInfo(uploadInfo);
 			long totalBytesRead = 0;
-			var filePath = uploadInfo.FilePath;
 			FileInfo fileInfo = new FileInfo(uploadInfo.FilePath);
 			string fileName = fileInfo.Name;
 			string mime = GetMimeTypeFromFileExtension(fileInfo.Extension);
-			var url = CreateConfigurationServiceUrl("FileApiService", "UploadFile");
-			string returnResult = string.Empty;
-			var fileId = Guid.NewGuid();
-			using (var client = new HttpClient(CreateCreatioHandler(cookieContainer: AuthCookie))) {
-				using (FileStream fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read)) {
-					while (fileStream.Length > totalBytesRead) {
-						Uri uri = BuildUploadUri(url, fileStream.Length, fileId, uploadInfo, fileName, mime);
-						int currentChunkSize = (int)Math.Min(chunkSize, fileStream.Length - totalBytesRead);
-						byte[] buffer = new byte[currentChunkSize];
-						var bytesRead = await fileStream.ReadAsync(buffer, 0, currentChunkSize);
-						totalBytesRead += bytesRead;
-						var response = Retry<HttpResponseMessage>(() => {
-							var msg = CreateUploadRequestMessage(uri, buffer, totalBytesRead - bytesRead,
-								currentChunkSize, fileStream.Length, fileName, mime);
-							return client.SendAsync(msg).Result;
-						}, _maxAttempts, _delaySec, _retryPolicy);
-						string resultString = await response.Content.ReadAsStringAsync();
-						returnResult = resultString;
-						response.EnsureSuccessStatusCode();
-						HandleUploadResponse(response, resultString, totalBytesRead, fileStream.Length);
+			string url = CreateConfigurationServiceUrl("FileApiService", "UploadFile");
+			Guid fileId = Guid.NewGuid();
+			HttpResponseMessage lastResponse = null;
+			using (FileStream stream = new FileStream(uploadInfo.FilePath, FileMode.Open, FileAccess.Read,
+				FileShare.Read, 81920, true)) {
+				while (stream.Length > totalBytesRead) {
+					Uri uri = BuildUploadUri(url, stream.Length, fileId, uploadInfo, fileName, mime);
+					int currentChunkSize = (int)Math.Min(chunkSize, stream.Length - totalBytesRead);
+					byte[] buffer = new byte[currentChunkSize];
+					int bytesRead = await stream.ReadAsync(buffer, 0, currentChunkSize, cancellationToken)
+						.ConfigureAwait(false);
+					long chunkStart = totalBytesRead;
+					totalBytesRead += bytesRead;
+					HttpResponseMessage response = await SendAsync(
+						() => CreateUploadRequestMessage(uri, buffer, chunkStart, bytesRead, stream.Length,
+							fileName, mime), timeout, _maxAttempts, _delaySec, cancellationToken)
+						.ConfigureAwait(false);
+					lastResponse?.Dispose();
+					lastResponse = response;
+					if (!response.IsSuccessStatusCode) {
+						return response;
 					}
+					string result = await response.Content.ReadAsStringAsync().ConfigureAwait(false); // NOSONAR: SendAsync already buffered content under cancellation.
+					HandleUploadResponse(response, result, totalBytesRead, stream.Length);
 				}
 			}
-			return returnResult;
+			return lastResponse ?? CreateEmptyResponse();
 		}
 
 		public bool DownloadAttachment(string schemaName, Guid recordId, string filePath, int timeout = 100000) {
@@ -997,12 +1116,43 @@ namespace Creatio.Client
 			if (string.IsNullOrEmpty(filePath)) {
 				throw new ArgumentException("FilePath cannot be null or empty", nameof(filePath));
 			}
+			bool result = false;
+			ExecuteLegacyWebRequest(() => {
+				using (HttpResponseMessage response = DownloadAttachmentAsync(schemaName, recordId, filePath, timeout,
+					CancellationToken.None).GetAwaiter().GetResult()) {
+					EnsureLegacySuccess(response);
+					result = true;
+				}
+			});
+			return result;
+		}
+
+		public Task<HttpResponseMessage> DownloadAttachmentAsync(string schemaName, Guid recordId,
+			string filePath, int timeout = 100000,
+			CancellationToken cancellationToken = default(CancellationToken))
+		{
+			if (string.IsNullOrEmpty(schemaName)) {
+				throw new ArgumentException("SchemaName cannot be null or empty", nameof(schemaName));
+			}
+			if (recordId == Guid.Empty) {
+				throw new ArgumentException("RecordId cannot be empty Guid", nameof(recordId));
+			}
+			if (string.IsNullOrEmpty(filePath)) {
+				throw new ArgumentException("FilePath cannot be null or empty", nameof(filePath));
+			}
 			string url = $"{CreateConfigurationServiceUrl("FileService", "Download")}/{schemaName}/{recordId}";
-			HttpWebRequest request = CreateCreatioRequest(url, null, timeout, "GET");
-			return Retry<bool>(() => {
-				request.SaveToFile(filePath);
-				return true;
-			}, _maxAttempts, _delaySec, _retryPolicy);
+			return DownloadToFileAsync(HttpMethod.Get, url, filePath, null, timeout, cancellationToken);
+		}
+
+		public void Dispose()
+		{
+			lock (_httpClientLock) {
+				if (_disposed) {
+					return;
+				}
+				_disposed = true;
+				_httpClient?.Dispose();
+			}
 		}
 
 		#endregion

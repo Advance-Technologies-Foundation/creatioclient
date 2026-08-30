@@ -64,6 +64,34 @@ To execute a PUT request:
 string data = client.ExecutePutRequest(<Url>, <RequestData>);
 ```
 
+For cancellation-aware access to the complete HTTP response, use the async counterparts:
+```csharp
+using var client = new CreatioClient(<AppUrl>, <UserName>, <UserPassword>);
+using HttpResponseMessage response = await client.ExecuteGetRequestAsync(
+    <Url>, cancellationToken: cancellationToken);
+
+HttpStatusCode status = response.StatusCode;
+HttpResponseHeaders headers = response.Headers;
+string content = await response.Content.ReadAsStringAsync();
+```
+
+`CreatioClient` implements the additive `IAsyncCreatioClient` interface. The original
+`ICreatioClient` interface is unchanged so existing third-party implementations remain binary compatible.
+
+The caller owns every `HttpResponseMessage` returned by an async operation and must dispose it.
+`CreatioClient` owns its shared `HttpClient` and should also be disposed when it is no longer needed.
+The existing synchronous methods remain available and retain their string, file, and exception behavior.
+For synchronous protocol errors, `WebException.Response` remains castable to `HttpWebResponse` and
+preserves the status, description, headers, request URI, method, and buffered error body used by known
+consumers. It is a bounded compatibility view; use the async API when other response metadata is required.
+Authenticated request URLs must use the configured Creatio origin or a same-host HTTP-to-HTTPS upgrade;
+the client rejects unrelated cross-origin requests rather than forwarding bearer, cookie, CSRF, or Windows credentials.
+
+The CI coverage gate enforces 100% line and branch coverage for the authentication handler pipeline.
+DTO property bags, WebSocket listeners, the compatibility-only `HttpWebRequest` extension surface, and
+the synchronous facade are excluded from that narrowly defined unit scope; they are covered by API,
+characterization, and live E2E gates instead of being counted toward an artificial package-wide percentage.
+
 Subscribe to WebSocket messages:
 ```csharp
 
