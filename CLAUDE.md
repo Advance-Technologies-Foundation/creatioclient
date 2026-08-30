@@ -46,7 +46,9 @@ creatioclient/                         # solution root
     creatioclient.csproj               # PackageId: creatio.client
     CreatioClient.cs                   # primary public class — all HTTP + WS entry-points
     ICreatioClient.cs                  # public interface (always code against this)
-    ATFWebRequestExtensions.cs         # extension methods on HttpWebRequest
+    IAsyncCreatioClient.cs             # additive cancellation-aware response API
+    CreatioAuthenticationHandler.cs    # password/cookie, OAuth, and NTLM auth pipeline
+    ATFWebRequestExtensions.cs         # legacy public compatibility surface only
     RetryPolicy.cs                     # enum: Simple | Progressive
     IWsListener.cs                     # internal WebSocket listener interface
     WsListenerSignalR.cs               # SignalR-over-WebSocket listener (isNetCore=true)
@@ -62,6 +64,12 @@ creatioclient/                         # solution root
 
   creatioclient.example/               # console app showing usage patterns
     Program.cs
+
+  creatioclient.Tests/                 # NUnit tests (net8.0 + net10.0)
+    LegacyHttpBehaviorCharacterizationTests.cs
+    ModernHttpClientTransportTests.cs
+    PublicApiCompatibilityTests.cs
+    LegacyCreatioEndToEndTests.cs       # opt-in tests against a real Creatio instance
 ```
 
 ---
@@ -81,21 +89,22 @@ There are three mutually exclusive auth paths, all lazy-initialised on the first
 CSRF protection: every modifying request includes the `BPMCSRF` cookie value in the
 `BPMCSRF` header (extracted from the cookie jar).
 
-### HTTP Client Duality
+### HTTP transport
 
-The library has a deliberate mixed usage of two HTTP stacks:
+Each `CreatioClient` instance owns one lazily initialized, pooled `HttpClient`. Its pipeline is:
 
-- `HttpWebRequest` (via `WebRequest.CreateHttp`) — used for GET requests, legacy file upload
-  (`UploadAlmFile`, `UploadAlmFileByChunk`), ping, and login. Extension methods live in
-  `ATFWebRequestExtensions`.
-- `HttpClient` (with a fresh `HttpClientHandler` per call) — used for POST/DELETE, modern
-  file uploads (`UploadFileAsync`, `UploadAttachmentAsync`, `UploadStaticFileAsync`).
+`CreatioClient` → `CreatioAuthenticationHandler` → `HttpClientHandler`
 
-> IMPORTANT: `HttpClient` instances are NOT pooled (a known issue). Each call in
-> `ExecutePostRequest` / `ExecuteDeleteRequest` creates and disposes a full handler/client.
-> This is safe for correctness but can exhaust ephemeral ports under high call rates. Do NOT
-> change this to a static/shared `HttpClient` without also handling cookie and OAuth header
-> injection carefully.
+- Password authentication logs in once, shares the cookie container, and adds `BPMCSRF`.
+- OAuth adds the bearer token in the delegating handler.
+- NTLM/Windows credentials are scoped to the configured Creatio origin through `CredentialCache`
+  and handled by the primary `HttpClientHandler`.
+- Authenticated requests and followed redirects are restricted to the configured scheme, host,
+  and port so credentials are not forwarded cross-origin.
+
+`CreatioClient` is disposable. Callers own and must dispose each `HttpResponseMessage` returned by
+the response-returning async API. `ATFWebRequestExtensions` remains public only for compatibility;
+the production `CreatioClient` transport does not call it.
 
 ### SSL
 
@@ -154,6 +163,13 @@ Large payloads that span multiple frames are accumulated via `_currentPosition`.
 | `SetRetryPolicy(count, delay, policy)` | Configure retry behaviour |
 | Events: `MessageReceived`, `ConnectionStateChanged` | Real-time WS events |
 
+### `IAsyncCreatioClient`
+
+`IAsyncCreatioClient` extends `ICreatioClient` without adding members to the established interface,
+which preserves existing third-party implementations. Its HTTP methods accept `CancellationToken`
+and return caller-owned `Task<HttpResponseMessage>` values so status, headers, and content remain
+observable. File-download methods finish streaming to disk before returning the response.
+
 ### URL Construction
 
 - Configuration services: `{AppUrl}/{WorkspaceId}/rest/{serviceName}/{methodName}`
@@ -186,46 +202,34 @@ Required fields for `UploadAttachmentAsync`:
 - **Regions used**: `Constants: Private`, `Fields: Private`, `Properties: Public/Private/Internal`,
   `Events: Public`, `Methods: Private/Protected/Public`, `Constructors: Public/Private`.
 - All public constructors are in the `Constructors: Public` region.
-- Return type is `string` (raw JSON) for all HTTP methods — callers parse the JSON themselves.
-  This is an intentional design choice; do not change existing signatures without a major version bump.
+- Existing synchronous HTTP methods return raw strings or retain their established file/boolean
+  contracts. Do not change those signatures or observable behavior. Add response-returning async
+  operations to `IAsyncCreatioClient` instead of expanding `ICreatioClient`.
 - Prefer `Guid.Empty` checks over null checks for `Guid` parameters.
-- Use `WebRequest.CreateHttp(url)` (not `WebRequest.Create(url)`) — the latter can return a
-  `FileWebRequest` on macOS/Linux and causes an `InvalidCastException`.
 - `Encoding.UTF8` for all string serialisation.
 - `JsonConvert.DeserializeObject<T>` (Newtonsoft.Json) for all JSON parsing.
-- No `async/await` in the public API except `UploadFileAsync`, `UploadAttachmentAsync`,
-  `UploadStaticFileAsync` — the rest use `.Result` or `.GetAwaiter().GetResult()` intentionally
-  to keep the public API synchronous and cross-target-framework compatible.
+- Keep synchronous compatibility wrappers, but implement new network behavior through the
+  cancellation-aware async response API.
 
 ---
 
 ## Known Issues and Areas to Be Careful About
 
-### 1. Zero test coverage
-There are no automated tests. Every change must be manually verified against a real Creatio
-instance. When adding tests, target `netstandard2.0`-compatible test runner (NUnit 4.x is already
-mentioned in the copilot instructions).
-
-### 2. HttpClient not pooled (socket exhaustion risk)
-`ExecutePostRequest`, `ExecuteDeleteRequest`, `UploadFileAsync`, and `UploadStaticFileAsync` each
-create a new `HttpClientHandler` + `HttpClient` inside the call. Under high-throughput scenarios
-this will exhaust TCP ports. Prefer `IHttpClientFactory` or a shared `HttpClient` in the future,
-but be careful about cookie container and OAuth header sharing.
-
-### 3. SSL disabled by default
+### 1. SSL disabled by default
 `_useUntrustedSsl = true` is the default. Never set this in CI tests against external endpoints
 without understanding the security implications.
 
-### 4. Blocking async over sync
+### 2. Blocking async over sync
 Several methods call `.Result` or `.GetAwaiter().GetResult()` on async operations. This is
 intentional for the synchronous API surface, but can cause deadlocks inside ASP.NET Framework
 `SynchronizationContext`. Callers should use the `*Async` overloads where available.
 
-### 5. `ExecuteDeleteRequest` is not on `ICreatioClient`
-The method exists on `CreatioClient` but was not added to the interface. Adding it is safe but
-constitutes a minor breaking change for implementors of the interface.
+### 3. `ExecuteDeleteRequest` is not on `ICreatioClient`
+The synchronous method exists on `CreatioClient` but was not added to the established interface.
+Its response-returning counterpart is available through `IAsyncCreatioClient`; do not expand
+`ICreatioClient`, because doing so breaks third-party implementors.
 
-### 6. `UploadStaticFile` URL bug
+### 4. `UploadStaticFile` URL bug
 In `UploadStaticFileAsync`, the URL is built as:
 ```csharp
 string url2 = url + "&fileName=" + fileName + $"folderName={folderName}";
@@ -233,21 +237,21 @@ string url2 = url + "&fileName=" + fileName + $"folderName={folderName}";
 The `&` before `folderName` is missing — it produces `...fileNamefoo.zipfolderName=bar`.
 This is a known bug. The fix is to insert `&` before `folderName=`.
 
-### 7. `UploadFile_original` is dead code
+### 5. `UploadFile_original` is compatibility-only code
 `UploadFile_original` is an older multipart upload implementation kept for reference. It is not
 called anywhere and should not be used. Do not extend it.
 
-### 8. WsListenerSignalR 8 MB buffer is fixed
+### 6. WsListenerSignalR 8 MB buffer is fixed
 The `_buffer` field is `byte[8_388_608]`. Messages larger than this will corrupt or truncate.
 There is no dynamic buffer expansion.
 
-### 9. Thread-based WebSocket listeners
+### 7. Thread-based WebSocket listeners
 Both WS listeners run on a raw `Thread` (not `Task`). This means thread-pool pressure is not
 an issue, but shutdown behaviour is tied to the `CancellationToken` and the thread runs
 indefinitely until cancelled. Always pass a real `CancellationToken` — never `CancellationToken.None`
 in production code.
 
-### 10. Login stores credentials in memory
+### 8. Login stores credentials in memory
 `_userName` and `_userPassword` are stored as plain strings in `CreatioClient` fields for the
 lifetime of the client instance. Avoid logging the client object.
 
@@ -257,7 +261,7 @@ lifetime of the client instance. Avoid logging the client object.
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| `ci.yml` | push/PR to `main`/`master` | Build + optional test on ubuntu, macos, windows |
+| `ci.yml` | push/PR to `main` | Build and test on ubuntu, macos, windows; enforce scoped coverage |
 | `release.yml` | push of tag `X.Y.Z` or `vX.Y.Z`, or manual dispatch | Build, pack, publish to NuGet.org; create GitHub Release |
 
 Version is injected at build time via `/p:Version=X.Y.Z` — the `.csproj` carries no hardcoded
@@ -269,14 +273,14 @@ Required secret: `CREATIOCLIENT_NUGET_API_KEY` (NuGet API key in repo settings).
 
 ## Adding New Features — Checklist
 
-1. Add/update the method on `ICreatioClient` with XML doc comments.
+1. Preserve `ICreatioClient`; add new response-returning HTTP operations to `IAsyncCreatioClient`.
 2. Implement in `CreatioClient.cs` following existing `#region` and naming conventions.
-3. Use `WebRequest.CreateHttp` (not `WebRequest.Create`) for any `HttpWebRequest` construction.
-4. Respect `_useUntrustedSsl` in any new `HttpWebRequest` or `HttpClientHandler`.
-5. Apply auth headers/cookies consistently (check `_oauthToken` first, fall back to cookie).
-6. Include CSRF token (`BPMCSRF`) for any state-changing request.
+3. Use the shared `HttpClient` and existing authentication pipeline; do not add `WebRequest` calls.
+4. Respect `_useUntrustedSsl` in `HttpClientHandler` changes.
+5. Keep bearer, cookie/BPMCSRF, and NTLM handling inside their existing pipeline layers.
+6. Reject cross-origin authenticated requests and redirects.
 7. Add input validation (`ArgumentNullException`, `ArgumentException`, `FileNotFoundException`)
    for public methods, mirroring the pattern in `ValidateUploadInfo`.
-8. Wrap the request body in the `Retry<T>` pattern if the operation is idempotent.
+8. Recreate request messages and content for every configured retry attempt.
 9. Update `README.md` with usage examples if the feature is user-facing.
-10. Manually test against a real Creatio instance before opening a PR.
+10. Run NUnit tests on net8.0 and net10.0 plus the live Creatio E2E suite before opening a PR.
