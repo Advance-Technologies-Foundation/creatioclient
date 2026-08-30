@@ -33,9 +33,10 @@ public class CreatioClientLoginTests
 			because: "the constructor is a convenience for the same explicit property contract");
 	}
 
-	[Test]
-	[Description("Verifies that password login defaults to the browser-equivalent current local time zone offset")]
-	public async Task Login_ShouldSendCurrentBrowserOffset_WhenTimeZoneOffsetIsNotSet()
+	[TestCase(false)]
+	[TestCase(true)]
+	[Description("Verifies that both password login overloads default to the browser-equivalent current local time zone offset")]
+	public async Task Login_ShouldSendCurrentBrowserOffset_WhenTimeZoneOffsetIsNotSet(bool useTimeoutOverload)
 	{
 		// Arrange
 		await using LoginLoopbackHttpServer server = new();
@@ -44,7 +45,11 @@ public class CreatioClientLoginTests
 		int offsetBeforeLogin = GetBrowserTimeZoneOffset();
 
 		// Act
-		client.Login();
+		if (useTimeoutOverload) {
+			client.Login(10_000);
+		} else {
+			client.Login();
+		}
 		int offsetAfterLogin = GetBrowserTimeZoneOffset();
 		RecordedRequest request = await capturedRequest;
 		JObject payload = JObject.Parse(request.Body);
