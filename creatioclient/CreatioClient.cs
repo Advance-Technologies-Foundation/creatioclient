@@ -311,6 +311,10 @@ namespace Creatio.Client
 				action();
 			} catch (WebException) {
 				throw;
+			} catch (CreatioAuthenticationHttpException exception) {
+				using (exception.Response) {
+					throw CreateLegacyProtocolException(exception.Response, exception);
+				}
 			} catch (OperationCanceledException exception) {
 				throw new WebException(exception.Message, exception, WebExceptionStatus.Timeout, null);
 			} catch (HttpRequestException exception) {
@@ -321,12 +325,15 @@ namespace Creatio.Client
 		private static void EnsureLegacySuccess(HttpResponseMessage response)
 		{
 			if (!response.IsSuccessStatusCode) {
-				WebResponse legacyResponse = LegacyHttpWebResponse.Create(response);
-				throw new WebException(
-					$"The remote server returned an error: ({(int)response.StatusCode}) {response.ReasonPhrase}.",
-					null, WebExceptionStatus.ProtocolError, legacyResponse);
+				throw CreateLegacyProtocolException(response);
 			}
 		}
+
+		private static WebException CreateLegacyProtocolException(HttpResponseMessage response,
+			Exception innerException = null) =>
+			new WebException(
+				$"The remote server returned an error: ({(int)response.StatusCode}) {response.ReasonPhrase}.",
+				innerException, WebExceptionStatus.ProtocolError, LegacyHttpWebResponse.Create(response));
 
 		private sealed class LegacyHttpWebResponse : HttpWebResponse
 		{

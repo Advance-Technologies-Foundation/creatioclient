@@ -274,6 +274,42 @@ public class LegacyHttpBehaviorCharacterizationTests
 	}
 
 	[Test]
+	public async Task Login_ShouldApplyTimeoutWhileReadingNtlmErrorBody()
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			new ScriptedResponse(StatusCode: 500, Body: "late-error",
+				BodyDelay: TimeSpan.FromMilliseconds(400)));
+		CreatioClient client = new(server.BaseUri.ToString(), true,
+			new NetworkCredential("windows-user", "windows-password"));
+
+		Action act = () => client.Login(requestTimeout: 50);
+
+		act.Should().Throw<WebException>()
+			.Which.Status.Should().Be(WebExceptionStatus.Timeout);
+		await capture;
+	}
+
+	[Test]
+	public async Task LazyAuthenticationError_ShouldRetainProtocolResponse()
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			new ScriptedResponse(StatusCode: 500, Body: "login-error"));
+		CreatioClient client = new(server.BaseUri.ToString(), "user", "password") { SkipPing = true };
+
+		Action act = () => client.ExecuteGetRequest(new Uri(server.BaseUri, "data").ToString());
+
+		WebException exception = act.Should().Throw<WebException>().Which;
+		exception.Status.Should().Be(WebExceptionStatus.ProtocolError);
+		HttpWebResponse response = exception.Response.Should().BeAssignableTo<HttpWebResponse>().Subject;
+		response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+		using StreamReader reader = new(response.GetResponseStream());
+		reader.ReadToEnd().Should().Be("login-error");
+		await capture;
+	}
+
+	[Test]
 	public async Task UploadAlmFile_ShouldRetainEmptyStringContractForTransportFailure()
 	{
 		string path = Path.GetTempFileName();

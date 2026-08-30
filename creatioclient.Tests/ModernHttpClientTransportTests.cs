@@ -244,6 +244,45 @@ public class ModernHttpClientTransportTests
 	}
 
 	[Test]
+	public async Task NtlmLoginAsync_ShouldDisposeResponse_WhenBodyReadFails()
+	{
+		Uri appUri = new("https://creatio.test/");
+		ThrowingContent content = new();
+		SequenceHandler inner = new(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError) {
+			Content = content
+		});
+		using CreatioAuthenticationHandler authentication = new(appUri, new CookieContainer(), null,
+			null, new NetworkCredential("windows-user", "windows-password"), () => null, () => 0,
+			() => true, true, inner);
+
+		Func<Task> act = async () => {
+			using HttpResponseMessage response = await authentication.LoginAsync(1000, CancellationToken.None);
+		};
+
+		await act.Should().ThrowAsync<HttpRequestException>();
+		content.IsDisposed.Should().BeTrue();
+	}
+
+	[Test]
+	public async Task LazyAuthenticationError_ShouldCloneResponseWithoutRequestOrBody()
+	{
+		Uri appUri = new("https://creatio.test/");
+		SequenceHandler inner = new(_ => new HttpResponseMessage(HttpStatusCode.BadGateway));
+		using CreatioAuthenticationHandler authentication = new(appUri, new CookieContainer(), "user",
+			"password", null, () => null, () => 0, () => true, true, inner);
+
+		Func<Task> act = () => authentication.EnsureAuthenticatedForRequestAsync(CancellationToken.None);
+
+		CreatioAuthenticationHttpException exception = (await act.Should()
+			.ThrowAsync<CreatioAuthenticationHttpException>()).Which;
+		using (exception.Response) {
+			exception.Response.RequestMessage.Should().BeNull();
+			exception.Response.Content.Should().NotBeNull();
+			(await exception.Response.Content.ReadAsByteArrayAsync()).Should().BeEmpty();
+		}
+	}
+
+	[Test]
 	public async Task LazyPasswordAuthentication_ShouldPingBeforeRequest_ForLegacyNetFrameworkMode()
 	{
 		await using ScriptedLoopbackHttpServer server = new();
@@ -601,6 +640,26 @@ public class ModernHttpClientTransportTests
 		{
 			await Task.Delay(100);
 			return Response(HttpStatusCode.OK, "late");
+		}
+	}
+
+	private sealed class ThrowingContent : HttpContent
+	{
+		public bool IsDisposed { get; private set; }
+
+		protected override Task SerializeToStreamAsync(Stream stream, TransportContext context) =>
+			Task.FromException(new IOException("simulated body failure"));
+
+		protected override bool TryComputeLength(out long length)
+		{
+			length = 0;
+			return false;
+		}
+
+		protected override void Dispose(bool disposing)
+		{
+			IsDisposed = true;
+			base.Dispose(disposing);
 		}
 	}
 

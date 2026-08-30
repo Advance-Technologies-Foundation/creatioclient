@@ -90,7 +90,9 @@ namespace Creatio.Client
 				using (HttpResponseMessage response = _credentials == null
 					? await PasswordLoginAsync(cancellationToken).ConfigureAwait(false)
 					: await NtlmLoginAsync(cancellationToken).ConfigureAwait(false)) {
-					response.EnsureSuccessStatusCode();
+					if (!response.IsSuccessStatusCode) {
+						throw new CreatioAuthenticationHttpException(CloneResponse(response));
+					}
 					if (_credentials == null && !HasSession()) {
 						throw new UnauthorizedAccessException(
 							$"Authentication response for {_appUri.ToString().TrimEnd('/')} did not contain an auth cookie.");
@@ -118,7 +120,7 @@ namespace Creatio.Client
 				Content = new StringContent(body, Encoding.UTF8, "application/json")
 			}) {
 				HttpResponseMessage response = await SendInnerAsync(request, cancellationToken).ConfigureAwait(false);
-				string responseBody = await ReadContentWithCancellationAsync(response, cancellationToken)
+				string responseBody = await ReadLoginContentAsync(response, cancellationToken)
 					.ConfigureAwait(false);
 				if (responseBody.Contains("\"Code\":1")) {
 					response.Dispose();
@@ -132,8 +134,39 @@ namespace Creatio.Client
 		{
 			using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Get,
 				new Uri(_appUri, "Login/NuiLogin.aspx?ntlmlogin"))) {
-				return await SendInnerAsync(request, cancellationToken).ConfigureAwait(false);
+				HttpResponseMessage response = await SendInnerAsync(request, cancellationToken).ConfigureAwait(false);
+				_ = await ReadLoginContentAsync(response, cancellationToken).ConfigureAwait(false);
+				return response;
 			}
+		}
+
+		private static async Task<string> ReadLoginContentAsync(HttpResponseMessage response,
+			CancellationToken cancellationToken)
+		{
+			try {
+				return await ReadContentWithCancellationAsync(response, cancellationToken).ConfigureAwait(false);
+			} catch {
+				response.Dispose();
+				throw;
+			}
+		}
+
+		private static HttpResponseMessage CloneResponse(HttpResponseMessage response)
+		{
+			HttpResponseMessage clone = new HttpResponseMessage(response.StatusCode) {
+				ReasonPhrase = response.ReasonPhrase,
+				RequestMessage = response.RequestMessage == null
+					? null
+					: new HttpRequestMessage(response.RequestMessage.Method, response.RequestMessage.RequestUri),
+				Content = new ByteArrayContent(response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult())
+			};
+			foreach (var header in response.Headers) {
+				clone.Headers.TryAddWithoutValidation(header.Key, header.Value);
+			}
+			foreach (var header in response.Content.Headers) {
+				clone.Content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+			}
+			return clone;
 		}
 
 		private async Task TryPingAsync(CancellationToken cancellationToken)
@@ -297,5 +330,16 @@ namespace Creatio.Client
 			}
 			return source;
 		}
+	}
+
+	internal sealed class CreatioAuthenticationHttpException : HttpRequestException
+	{
+		internal CreatioAuthenticationHttpException(HttpResponseMessage response)
+			: base($"The authentication endpoint returned HTTP {(int)response.StatusCode} {response.ReasonPhrase}.")
+		{
+			Response = response;
+		}
+
+		internal HttpResponseMessage Response { get; }
 	}
 }
