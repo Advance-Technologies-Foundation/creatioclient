@@ -303,7 +303,7 @@ namespace Creatio.Client
 		private static async Task<string> ReadContentWithCancellationAsync(HttpResponseMessage response,
 			CancellationToken cancellationToken)
 		{
-			Task<string> readTask = response.Content.ReadAsStringAsync();
+			Task<string> readTask = response.Content.ReadAsStringAsync(); // NOSONAR: netstandard2.0 has no token overload; cancellation is raced below.
 			if (!cancellationToken.CanBeCanceled) {
 				return await readTask.ConfigureAwait(false);
 			}

@@ -84,7 +84,7 @@ namespace Creatio.Client
 						};
 						if (_useUntrustedSsl) {
 							primaryHandler.ServerCertificateCustomValidationCallback =
-								(request, certificate, chain, errors) => true;
+								(request, certificate, chain, errors) => true; // NOSONAR: opt-in legacy support for self-signed on-premise Creatio.
 						}
 						_authenticationHandler = new CreatioAuthenticationHandler(
 							new Uri(AppUrl), _authCookie, _userName, _userPassword, _credentials,
@@ -388,7 +388,10 @@ namespace Creatio.Client
 			public override string StatusDescription => _statusDescription;
 			public override bool SupportsHeaders => true;
 			public override Stream GetResponseStream() => new MemoryStream(_body, writable: false);
-			public override void Close() { }
+			public override void Close()
+			{
+				// The compatibility response owns only immutable managed buffers, so there is nothing to release.
+			}
 		}
 
 		private static string ReadLegacyServiceResponse(Task<HttpResponseMessage> responseTask)
@@ -685,7 +688,7 @@ namespace Creatio.Client
 			}
 		}
 
-		private async Task<HttpResponseMessage> DownloadToFileAsync(HttpMethod method, string url,
+		private async Task<HttpResponseMessage> DownloadToFileAsync(HttpMethod method, string url, // NOSONAR: retry/streaming branches are kept together and fully characterized.
 			string filePath, string requestData, int requestTimeout, CancellationToken cancellationToken)
 		{
 			await EnsureAuthenticatedAsync(100_000, cancellationToken).ConfigureAwait(false);
@@ -708,7 +711,7 @@ namespace Creatio.Client
 							response.Dispose();
 							response = null;
 						} else {
-							Stream content = await response.Content.ReadAsStreamAsync().ConfigureAwait(false);
+							Stream content = await response.Content.ReadAsStreamAsync().ConfigureAwait(false); // NOSONAR: netstandard2.0 has no token overload; reads below use the timeout token.
 							using (FileStream stream = new FileStream(filePath, FileMode.Create, FileAccess.Write,
 								FileShare.None, 81920, true)) {
 								byte[] buffer = new byte[81920];
@@ -744,7 +747,7 @@ namespace Creatio.Client
 			}
 			HttpContent original = response.Content;
 			List<KeyValuePair<string, IEnumerable<string>>> headers = original.Headers.ToList();
-			using (Stream source = await original.ReadAsStreamAsync().ConfigureAwait(false))
+			using (Stream source = await original.ReadAsStreamAsync().ConfigureAwait(false)) // NOSONAR: netstandard2.0 has no token overload; reads below use cancellationToken.
 			using (MemoryStream buffer = new MemoryStream()) {
 				byte[] bytes = new byte[81920];
 				int read;
@@ -996,7 +999,7 @@ namespace Creatio.Client
 					if (!response.IsSuccessStatusCode) {
 						return response;
 					}
-					string result = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+					string result = await response.Content.ReadAsStringAsync().ConfigureAwait(false); // NOSONAR: SendAsync already buffered content under cancellation.
 					HandleUploadResponse(response, result, totalBytesRead, stream.Length);
 				}
 			}
@@ -1090,7 +1093,7 @@ namespace Creatio.Client
 					if (!response.IsSuccessStatusCode) {
 						return response;
 					}
-					string result = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+					string result = await response.Content.ReadAsStringAsync().ConfigureAwait(false); // NOSONAR: SendAsync already buffered content under cancellation.
 					HandleUploadResponse(response, result, totalBytesRead, stream.Length);
 				}
 			}
