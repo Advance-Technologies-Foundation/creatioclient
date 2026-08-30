@@ -69,6 +69,13 @@ namespace Creatio.Client
 
 		#region Properties: Public
 
+		/// <summary>
+		/// Gets or sets the login time zone offset, in the same UTC-minus-local minutes convention as
+		/// JavaScript <c>Date.getTimezoneOffset()</c>. When unset, the current local offset is calculated
+		/// when password login starts. OAuth client-credentials and NTLM authentication do not send this value.
+		/// </summary>
+		public int? TimeZoneOffset { get; set; }
+
 		public bool SkipPing { get; set; }
 
 		#endregion
@@ -90,6 +97,15 @@ namespace Creatio.Client
 		/// <returns>The URL without a trailing slash.</returns>
 		private static string NormalizeUrl(string url) {
 			return url.TrimEnd('/');
+		}
+
+		private string BuildLoginRequestData() {
+			int timeZoneOffset = TimeZoneOffset ?? -(int)DateTimeOffset.Now.Offset.TotalMinutes;
+			return JsonConvert.SerializeObject(new {
+				UserName = _userName,
+				UserPassword = _userPassword,
+				TimeZoneOffset = timeZoneOffset
+			});
 		}
 
 		private static async Task<string> GetAccessTokenByClientCredentials(string authApp, string clientId,
@@ -377,6 +393,19 @@ namespace Creatio.Client
 		}
 
 		/// <summary>
+		/// Initializes a new instance of the <see cref="CreatioClient"/> class with an explicit login time zone offset.
+		/// </summary>
+		/// <param name="appUrl">The URL of the Creatio application.</param>
+		/// <param name="userName">The username to use for authentication.</param>
+		/// <param name="userPassword">The password to use for authentication.</param>
+		/// <param name="timeZoneOffset">The UTC-minus-local offset in minutes, matching JavaScript <c>Date.getTimezoneOffset()</c>.</param>
+		/// <param name="isNetCore">Optional. A boolean value indicating whether the client is running on .NET Core. Default is false.</param>
+		public CreatioClient(string appUrl, string userName, string userPassword, int timeZoneOffset,
+			bool isNetCore = false) : this(appUrl, userName, userPassword, isNetCore) {
+			TimeZoneOffset = timeZoneOffset;
+		}
+
+		/// <summary>
 		/// Initializes a new instance of the <see cref="CreatioClient"/> class.
 		/// </summary>
 		/// <param name="appUrl">The URL of the Creatio application.</param>
@@ -599,10 +628,7 @@ namespace Creatio.Client
 				return;
 			}
 
-			string authData = @"{
-				""UserName"":""" + _userName + @""",
-				""UserPassword"":""" + _userPassword + @"""
-			}";
+			string authData = BuildLoginRequestData();
 			HttpWebRequest request = CreateRequest(LoginUrl);
 			_authCookie = new CookieContainer();
 			request.CookieContainer = _authCookie;
@@ -629,10 +655,7 @@ namespace Creatio.Client
 				return;
 			}
 			
-			string authData = @"{
-				""UserName"":""" + _userName + @""",
-				""UserPassword"":""" + _userPassword + @"""
-			}";
+			string authData = BuildLoginRequestData();
 			HttpWebRequest request = CreateRequest(LoginUrl);
 			request.Timeout = requestTimeout;
 			_authCookie = new CookieContainer();
