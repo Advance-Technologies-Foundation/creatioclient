@@ -17,10 +17,19 @@ You can initialize CreatioClient in three(3) different ways
     var client = new CreatioClient(<AppUrl>, <UserName>, <UserPassword>);
     ```
 
+    Password login sends the current local time zone offset in the same format as the Creatio browser.
+    To preserve a caller-selected offset, pass it to the constructor:
+    ```csharp
+    var client = new CreatioClient(<AppUrl>, <UserName>, <UserPassword>, timeZoneOffset: -120);
+    ```
+    You can also set `client.TimeZoneOffset` explicitly before the first request or login. The value is
+    UTC minus local time in minutes, matching JavaScript `Date.getTimezoneOffset()`.
+
 - Use [OAuth 2.0](https://academy.creatio.com/docs/8.x/dev/development-on-creatio-platform/integrations-and-api/authentication/oauth-2-0-authorization/identity-service-overview)
     ```csharp
    var client = new CreatioClient(<AppUrl>, <ClientId>, <ClientSecret>, <UserName>, <UserPassword>);
     ```
+    `TimeZoneOffset` is a password-login field and is not sent during OAuth client-credentials authentication.
 
 - Use [NTLM user authentication](https://learn.microsoft.com/en-us/troubleshoot/windows-server/windows-security/ntlm-user-authentication)
     ```csharp
