@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -34,7 +35,7 @@ namespace Creatio.Client
 		private readonly string _userPassword;
 		private readonly bool _isNetCore;
 		private readonly bool _useUntrustedSsl = true;
-		private CookieContainer _authCookie = new CookieContainer();
+		private readonly CookieContainer _authCookie = new CookieContainer();
 		private string _oauthToken;
 		private int _maxAttempts = 1;
 		private int _delaySec = 1;
@@ -66,6 +67,8 @@ namespace Creatio.Client
 			}
 		}
 
+		[SuppressMessage("Security", "S4830:Server certificates should be verified during SSL/TLS connections",
+			Justification = "The public useUntrustedSsl option intentionally supports self-signed on-premise Creatio instances.")]
 		private HttpClient HttpClient {
 			get {
 				ThrowIfDisposed();
@@ -309,8 +312,6 @@ namespace Creatio.Client
 		{
 			try {
 				action();
-			} catch (WebException) {
-				throw;
 			} catch (CreatioAuthenticationHttpException exception) {
 				using (exception.Response) {
 					throw CreateLegacyProtocolException(exception.Response, exception);
@@ -335,6 +336,8 @@ namespace Creatio.Client
 				$"The remote server returned an error: ({(int)response.StatusCode}) {response.ReasonPhrase}.",
 				innerException, WebExceptionStatus.ProtocolError, LegacyHttpWebResponse.Create(response));
 
+		[SuppressMessage("Reliability", "S3453:Classes should not have only private constructors",
+			Justification = "Instances bypass HttpWebResponse constructors to preserve the legacy concrete response contract without HttpWebRequest.")]
 		private sealed class LegacyHttpWebResponse : HttpWebResponse
 		{
 			private byte[] _body;
@@ -1024,14 +1027,17 @@ namespace Creatio.Client
 			string headerTemplate =
 				"Content-Disposition: form-data; name=\"{0}\"; filename=\"{1}\"\r\n" +
 				"Content-Type: application/octet-stream\r\n\r\n";
-				content.Write(boundaryBytes, 0, boundaryBytes.Length);
+				await content.WriteAsync(boundaryBytes, 0, boundaryBytes.Length, cancellationToken)
+					.ConfigureAwait(false);
 				byte[] headerBytes = Encoding.UTF8.GetBytes(string.Format(headerTemplate, "files", fileName));
-				content.Write(headerBytes, 0, headerBytes.Length);
+				await content.WriteAsync(headerBytes, 0, headerBytes.Length, cancellationToken)
+					.ConfigureAwait(false);
 				using (FileStream fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read,
 					FileShare.Read, 81920, true)) {
 					await fileStream.CopyToAsync(content, 81920, cancellationToken).ConfigureAwait(false);
 				}
-				content.Write(endBoundaryBytes, 0, endBoundaryBytes.Length);
+				await content.WriteAsync(endBoundaryBytes, 0, endBoundaryBytes.Length, cancellationToken)
+					.ConfigureAwait(false);
 				byte[] body = content.ToArray();
 				return await SendAsync(() => {
 					HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, url) {

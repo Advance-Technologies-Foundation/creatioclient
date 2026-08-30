@@ -11,6 +11,8 @@ namespace Creatio.Client
 {
 	internal sealed class CreatioAuthenticationHandler : DelegatingHandler
 	{
+		private const string BpmCsrfCookieName = "BPMCSRF";
+
 		private readonly Uri _appUri;
 		private readonly CookieContainer _cookies;
 		private readonly string _userName;
@@ -64,9 +66,9 @@ namespace Creatio.Client
 				request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 			} else {
 				await EnsureAuthenticatedAsync(cancellationToken).ConfigureAwait(false);
-				Cookie csrf = _cookies.GetCookies(_appUri)["BPMCSRF"];
-				if (csrf != null && !request.Headers.Contains("BPMCSRF")) {
-					request.Headers.TryAddWithoutValidation("BPMCSRF", csrf.Value);
+				Cookie csrf = _cookies.GetCookies(_appUri)[BpmCsrfCookieName];
+				if (csrf != null && !request.Headers.Contains(BpmCsrfCookieName)) {
+					request.Headers.TryAddWithoutValidation(BpmCsrfCookieName, csrf.Value);
 				}
 			}
 			return await SendInnerAsync(request, cancellationToken).ConfigureAwait(false);
@@ -174,15 +176,16 @@ namespace Creatio.Client
 			try {
 				using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post,
 					new Uri(_appUri, "0/ping"))) {
-					Cookie csrf = _cookies.GetCookies(_appUri)["BPMCSRF"];
+					Cookie csrf = _cookies.GetCookies(_appUri)[BpmCsrfCookieName];
 					if (csrf != null) {
-						request.Headers.TryAddWithoutValidation("BPMCSRF", csrf.Value);
+						request.Headers.TryAddWithoutValidation(BpmCsrfCookieName, csrf.Value);
 					}
 					using (HttpResponseMessage response = await SendInnerAsync(request, cancellationToken)
 						.ConfigureAwait(false)) { }
 				}
 			} catch (HttpRequestException) {
 				// Legacy lazy authentication treats a ping transport failure as non-fatal.
+				return;
 			}
 		}
 
@@ -191,7 +194,7 @@ namespace Creatio.Client
 			CookieCollection cookies = _cookies.GetCookies(_appUri);
 			return _credentials == null
 				? cookies[".ASPXAUTH"] != null
-				: cookies["BPMCSRF"] != null || _authenticated;
+				: cookies[BpmCsrfCookieName] != null || _authenticated;
 		}
 
 		private bool IsSameOrigin(Uri requestUri) => requestUri != null
