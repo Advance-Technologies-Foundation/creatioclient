@@ -44,6 +44,21 @@ jobs:
             echo "No *.Tests.csproj found; skipping test step."
           fi
 
+      - name: Enforce authentication pipeline coverage
+        if: runner.os == 'Linux'
+        run: >-
+          dotnet test creatioclient.Tests/creatioclient.Tests.csproj
+          --configuration Release
+          --no-build
+          --framework net8.0
+          --filter "TestCategory!=E2E"
+          /p:CollectCoverage=true
+          "/p:Include=[Creatio.Client]Creatio.Client.CreatioAuthenticationHandler*"
+          /p:Threshold=100
+          /p:ThresholdType=line%2cbranch
+          /p:ThresholdStat=total
+          /p:CoverletOutputFormat=json
+
       - name: Upload test results
         if: always() && hashFiles('**/TestResults/*.trx') != ''
         uses: actions/upload-artifact@v4
