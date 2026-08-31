@@ -277,10 +277,7 @@ namespace Creatio.Client
 					Uri location = response.Headers.Location.IsAbsoluteUri
 						? response.Headers.Location
 						: new Uri(current.RequestUri, response.Headers.Location);
-					if (stopAtAuthenticationRedirect && IsLoginUri(location)) {
-						return response;
-					}
-					if (!IsTrustedOrigin(location)) {
+					if (ShouldStopAtRedirect(location, stopAtAuthenticationRedirect)) {
 						return response;
 					}
 					HttpRequestMessage redirected = CreateRedirectRequest(current, response.StatusCode, location);
@@ -344,6 +341,9 @@ namespace Creatio.Client
 
 		private bool IsLoginUri(Uri uri) => IsTrustedOrigin(uri)
 			&& uri.AbsolutePath.IndexOf("/Login/", StringComparison.OrdinalIgnoreCase) >= 0;
+
+		private bool ShouldStopAtRedirect(Uri location, bool stopAtAuthenticationRedirect) =>
+			(stopAtAuthenticationRedirect && IsLoginUri(location)) || !IsTrustedOrigin(location);
 
 		private static async Task<HttpResponseMessage> AwaitWithCancellationAsync(
 			Task<HttpResponseMessage> responseTask, CancellationToken cancellationToken)

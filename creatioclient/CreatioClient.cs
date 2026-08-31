@@ -220,10 +220,10 @@ namespace Creatio.Client
 		private async Task<HttpResponseMessage> SendAsync(Func<HttpRequestMessage> requestFactory,
 			int requestTimeout, int maxAttempts, int delaySeconds, CancellationToken cancellationToken,
 			HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead,
-			bool authenticationComplete = false, SessionRecoveryState sessionRecovery = null)
+			SessionRecoveryState sessionRecovery = null)
 		{
 			sessionRecovery = sessionRecovery ?? new SessionRecoveryState();
-			if (!authenticationComplete) {
+			if (!sessionRecovery.AuthenticationComplete) {
 				await EnsureAuthenticatedAsync(100_000, cancellationToken).ConfigureAwait(false);
 			}
 			if (maxAttempts < 1) {
@@ -709,7 +709,7 @@ namespace Creatio.Client
 			await EnsureAuthenticatedAsync(100_000, cancellationToken).ConfigureAwait(false);
 			int maxAttempts = Math.Max(1, _maxAttempts);
 			int multiplier = 1;
-			SessionRecoveryState sessionRecovery = new SessionRecoveryState();
+			SessionRecoveryState sessionRecovery = new SessionRecoveryState(authenticationComplete: true);
 			for (int attempt = 1; attempt <= maxAttempts; attempt++) {
 				using (CancellationTokenSource timeout = CreateTimeout(requestTimeout, cancellationToken)) {
 					HttpResponseMessage response = null;
@@ -717,7 +717,7 @@ namespace Creatio.Client
 						response = await SendAsync(
 							() => CreateJsonRequest(method, url, requestData, omitEmptyContent: method == HttpMethod.Get),
 							Timeout.Infinite, 1, _delaySec, timeout.Token,
-							HttpCompletionOption.ResponseHeadersRead, authenticationComplete: true,
+							HttpCompletionOption.ResponseHeadersRead,
 							sessionRecovery: sessionRecovery)
 							.ConfigureAwait(false);
 						if (!response.IsSuccessStatusCode) {
@@ -758,6 +758,13 @@ namespace Creatio.Client
 
 		private sealed class SessionRecoveryState
 		{
+			public SessionRecoveryState(bool authenticationComplete = false)
+			{
+				AuthenticationComplete = authenticationComplete;
+			}
+
+			public bool AuthenticationComplete { get; }
+
 			public bool Attempted { get; set; }
 		}
 
