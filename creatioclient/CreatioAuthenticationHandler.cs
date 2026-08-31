@@ -24,6 +24,7 @@ namespace Creatio.Client
 		private readonly bool _isNetCore;
 		private readonly SemaphoreSlim _loginLock = new SemaphoreSlim(1, 1);
 		private bool _authenticated;
+		private int _authenticationGeneration;
 
 		public CreatioAuthenticationHandler(Uri appUri, CookieContainer cookies, string userName,
 			string userPassword, ICredentials credentials, Func<string> bearerToken,
@@ -48,6 +49,9 @@ namespace Creatio.Client
 					? await PasswordLoginAsync(timeout.Token).ConfigureAwait(false)
 					: await NtlmLoginAsync(timeout.Token).ConfigureAwait(false);
 				_authenticated = response.IsSuccessStatusCode && HasSession();
+				if (_authenticated) {
+					Interlocked.Increment(ref _authenticationGeneration);
+				}
 				return response;
 			}
 		}
@@ -62,16 +66,39 @@ namespace Creatio.Client
 				throw new InvalidOperationException("CreatioClient cannot send authenticated requests to a different origin.");
 			}
 			string token = _bearerToken();
+			int authenticationGeneration = 0;
 			if (!string.IsNullOrEmpty(token)) {
 				request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 			} else {
 				await EnsureAuthenticatedAsync(cancellationToken).ConfigureAwait(false);
+				authenticationGeneration = Volatile.Read(ref _authenticationGeneration);
 				Cookie csrf = _cookies.GetCookies(_appUri)[BpmCsrfCookieName];
 				if (csrf != null && !request.Headers.Contains(BpmCsrfCookieName)) {
 					request.Headers.TryAddWithoutValidation(BpmCsrfCookieName, csrf.Value);
 				}
 			}
-			return await SendInnerAsync(request, cancellationToken).ConfigureAwait(false);
+			HttpResponseMessage response = await SendInnerAsync(request, cancellationToken,
+				stopAtAuthenticationRedirect: string.IsNullOrEmpty(token)).ConfigureAwait(false);
+			if (string.IsNullOrEmpty(token)
+				&& IsExpiredSessionResponse(response, authenticationGeneration)) {
+				throw new CreatioSessionExpiredException(authenticationGeneration, response);
+			}
+			return response;
+		}
+
+		public async Task RecoverExpiredSessionAsync(int authenticationGeneration,
+			CancellationToken cancellationToken)
+		{
+			await _loginLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+			try {
+				if (Volatile.Read(ref _authenticationGeneration) != authenticationGeneration) {
+					return;
+				}
+				InvalidateSession();
+				await AuthenticateAsync(cancellationToken).ConfigureAwait(false);
+			} finally {
+				_loginLock.Release();
+			}
 		}
 
 		private async Task EnsureAuthenticatedAsync(CancellationToken cancellationToken)
@@ -89,23 +116,44 @@ namespace Creatio.Client
 					_authenticated = true;
 					return;
 				}
-				using (HttpResponseMessage response = _credentials == null
-					? await PasswordLoginAsync(cancellationToken).ConfigureAwait(false)
-					: await NtlmLoginAsync(cancellationToken).ConfigureAwait(false)) {
-					if (!response.IsSuccessStatusCode) {
-						throw new CreatioAuthenticationHttpException(CloneResponse(response));
-					}
-					if (_credentials == null && !HasSession()) {
-						throw new UnauthorizedAccessException(
-							$"Authentication response for {_appUri.ToString().TrimEnd('/')} did not contain an auth cookie.");
-					}
-					_authenticated = true;
-				}
-				if (!_isNetCore && !_skipPing()) {
-					await TryPingAsync(cancellationToken).ConfigureAwait(false);
-				}
+				await AuthenticateAsync(cancellationToken).ConfigureAwait(false);
 			} finally {
 				_loginLock.Release();
+			}
+		}
+
+		private async Task AuthenticateAsync(CancellationToken cancellationToken)
+		{
+			using (HttpResponseMessage response = _credentials == null
+				? await PasswordLoginAsync(cancellationToken).ConfigureAwait(false)
+				: await NtlmLoginAsync(cancellationToken).ConfigureAwait(false)) {
+				if (!response.IsSuccessStatusCode) {
+					throw new CreatioAuthenticationHttpException(CloneResponse(response));
+				}
+				if (_credentials == null && !HasSession()) {
+					throw new UnauthorizedAccessException(
+						$"Authentication response for {_appUri.ToString().TrimEnd('/')} did not contain an auth cookie.");
+				}
+				_authenticated = true;
+				Interlocked.Increment(ref _authenticationGeneration);
+			}
+			if (!_isNetCore && !_skipPing()) {
+				await TryPingAsync(cancellationToken).ConfigureAwait(false);
+			}
+		}
+
+		private void InvalidateSession()
+		{
+			_authenticated = false;
+			ExpireCookie(".ASPXAUTH");
+			ExpireCookie(BpmCsrfCookieName);
+		}
+
+		private void ExpireCookie(string name)
+		{
+			Cookie cookie = _cookies.GetCookies(_appUri)[name];
+			if (cookie != null) {
+				cookie.Expired = true;
 			}
 		}
 
@@ -215,7 +263,7 @@ namespace Creatio.Client
 			new Uri(uri.AbsoluteUri.TrimEnd('/') + "/", UriKind.Absolute);
 
 		private async Task<HttpResponseMessage> SendInnerAsync(HttpRequestMessage request,
-			CancellationToken cancellationToken)
+			CancellationToken cancellationToken, bool stopAtAuthenticationRedirect = false)
 		{
 			HttpRequestMessage current = request;
 			bool ownsCurrent = false;
@@ -229,6 +277,9 @@ namespace Creatio.Client
 					Uri location = response.Headers.Location.IsAbsoluteUri
 						? response.Headers.Location
 						: new Uri(current.RequestUri, response.Headers.Location);
+					if (stopAtAuthenticationRedirect && IsLoginUri(location)) {
+						return response;
+					}
 					if (!IsTrustedOrigin(location)) {
 						return response;
 					}
@@ -279,6 +330,20 @@ namespace Creatio.Client
 			|| statusCode == HttpStatusCode.RedirectMethod
 			|| (int)statusCode == 307
 			|| (int)statusCode == 308;
+
+		private bool IsExpiredSessionResponse(HttpResponseMessage response,
+			int authenticationGeneration) =>
+			response.StatusCode == HttpStatusCode.Unauthorized
+			|| (response.StatusCode == HttpStatusCode.Forbidden
+				&& Volatile.Read(ref _authenticationGeneration) != authenticationGeneration)
+			|| (IsRedirect(response.StatusCode)
+				&& response.Headers.Location != null
+				&& IsLoginUri(response.Headers.Location.IsAbsoluteUri
+					? response.Headers.Location
+					: new Uri(response.RequestMessage?.RequestUri ?? _appUri, response.Headers.Location)));
+
+		private bool IsLoginUri(Uri uri) => IsTrustedOrigin(uri)
+			&& uri.AbsolutePath.IndexOf("/Login/", StringComparison.OrdinalIgnoreCase) >= 0;
 
 		private static async Task<HttpResponseMessage> AwaitWithCancellationAsync(
 			Task<HttpResponseMessage> responseTask, CancellationToken cancellationToken)
@@ -342,6 +407,21 @@ namespace Creatio.Client
 		{
 			Response = response;
 		}
+
+		internal HttpResponseMessage Response { get; }
+	}
+
+	internal sealed class CreatioSessionExpiredException : HttpRequestException
+	{
+		internal CreatioSessionExpiredException(int authenticationGeneration,
+			HttpResponseMessage response)
+			: base("The Creatio session expired and must be authenticated again.")
+		{
+			AuthenticationGeneration = authenticationGeneration;
+			Response = response;
+		}
+
+		internal int AuthenticationGeneration { get; }
 
 		internal HttpResponseMessage Response { get; }
 	}

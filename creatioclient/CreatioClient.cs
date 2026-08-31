@@ -220,8 +220,9 @@ namespace Creatio.Client
 		private async Task<HttpResponseMessage> SendAsync(Func<HttpRequestMessage> requestFactory,
 			int requestTimeout, int maxAttempts, int delaySeconds, CancellationToken cancellationToken,
 			HttpCompletionOption completionOption = HttpCompletionOption.ResponseContentRead,
-			bool authenticationComplete = false)
+			bool authenticationComplete = false, SessionRecoveryState sessionRecovery = null)
 		{
+			sessionRecovery = sessionRecovery ?? new SessionRecoveryState();
 			if (!authenticationComplete) {
 				await EnsureAuthenticatedAsync(100_000, cancellationToken).ConfigureAwait(false);
 			}
@@ -229,13 +230,24 @@ namespace Creatio.Client
 				maxAttempts = 1;
 			}
 			int multiplier = 1;
-			for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+			int attempt = 1;
+			while (attempt <= maxAttempts) {
 				using (HttpRequestMessage request = requestFactory())
 				using (CancellationTokenSource timeout = CreateTimeout(requestTimeout, cancellationToken)) {
 					try {
 						return await HttpClient.SendAsync(request, completionOption, timeout.Token)
 							.ConfigureAwait(false);
+					} catch (CreatioSessionExpiredException exception) {
+						if (sessionRecovery.Attempted || cancellationToken.IsCancellationRequested) {
+							return exception.Response;
+						}
+						using (exception.Response) {
+							sessionRecovery.Attempted = true;
+							await _authenticationHandler.RecoverExpiredSessionAsync(
+								exception.AuthenticationGeneration, timeout.Token).ConfigureAwait(false);
+						}
 					} catch when (attempt < maxAttempts && !cancellationToken.IsCancellationRequested) {
+						attempt++;
 						if (_retryPolicy == RetryPolicy.Progressive) {
 							multiplier++;
 						}
@@ -697,6 +709,7 @@ namespace Creatio.Client
 			await EnsureAuthenticatedAsync(100_000, cancellationToken).ConfigureAwait(false);
 			int maxAttempts = Math.Max(1, _maxAttempts);
 			int multiplier = 1;
+			SessionRecoveryState sessionRecovery = new SessionRecoveryState();
 			for (int attempt = 1; attempt <= maxAttempts; attempt++) {
 				using (CancellationTokenSource timeout = CreateTimeout(requestTimeout, cancellationToken)) {
 					HttpResponseMessage response = null;
@@ -704,7 +717,8 @@ namespace Creatio.Client
 						response = await SendAsync(
 							() => CreateJsonRequest(method, url, requestData, omitEmptyContent: method == HttpMethod.Get),
 							Timeout.Infinite, 1, _delaySec, timeout.Token,
-							HttpCompletionOption.ResponseHeadersRead, authenticationComplete: true)
+							HttpCompletionOption.ResponseHeadersRead, authenticationComplete: true,
+							sessionRecovery: sessionRecovery)
 							.ConfigureAwait(false);
 						if (!response.IsSuccessStatusCode) {
 							if (attempt == maxAttempts) {
@@ -740,6 +754,11 @@ namespace Creatio.Client
 					.ConfigureAwait(false);
 			}
 			throw new InvalidOperationException("The download retry loop completed without a response.");
+		}
+
+		private sealed class SessionRecoveryState
+		{
+			public bool Attempted { get; set; }
 		}
 
 		private static async Task BufferResponseContentAsync(HttpResponseMessage response,
