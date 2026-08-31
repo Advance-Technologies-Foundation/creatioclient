@@ -9,6 +9,8 @@ namespace Creatio.Client
 	public sealed class CreatioSessionCookie
 	{
 		/// <summary>Initializes a detached session cookie.</summary>
+		[System.Diagnostics.CodeAnalysis.SuppressMessage("Design", "S107:Methods should not have too many parameters",
+			Justification = "The immutable transport mirrors the eight browser cookie fields as one explicit secret-bearing value.")]
 		public CreatioSessionCookie(string name, string value, string domain, string path,
 			bool httpOnly, bool secure, string sameSite, DateTime expires)
 		{
