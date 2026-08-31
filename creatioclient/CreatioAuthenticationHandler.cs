@@ -11,7 +11,8 @@ namespace Creatio.Client
 {
 	internal sealed class CreatioAuthenticationHandler : DelegatingHandler
 	{
-		private const string BpmCsrfCookieName = "BPMCSRF";
+		private const string ModernCsrfCookieName = "CRT_CSRF";
+		private const string LegacyCsrfCookieName = "BPMCSRF";
 
 		private readonly Uri _appUri;
 		private readonly CookieContainer _cookies;
@@ -72,10 +73,7 @@ namespace Creatio.Client
 			} else {
 				await EnsureAuthenticatedAsync(cancellationToken).ConfigureAwait(false);
 				authenticationGeneration = Volatile.Read(ref _authenticationGeneration);
-				Cookie csrf = _cookies.GetCookies(_appUri)[BpmCsrfCookieName];
-				if (csrf != null && !request.Headers.Contains(BpmCsrfCookieName)) {
-					request.Headers.TryAddWithoutValidation(BpmCsrfCookieName, csrf.Value);
-				}
+				ApplyCsrfHeader(request);
 			}
 			HttpResponseMessage response = await SendInnerAsync(request, cancellationToken,
 				stopAtAuthenticationRedirect: string.IsNullOrEmpty(token)).ConfigureAwait(false);
@@ -146,7 +144,8 @@ namespace Creatio.Client
 		{
 			_authenticated = false;
 			ExpireCookie(".ASPXAUTH");
-			ExpireCookie(BpmCsrfCookieName);
+			ExpireCookie(ModernCsrfCookieName);
+			ExpireCookie(LegacyCsrfCookieName);
 		}
 
 		private void ExpireCookie(string name)
@@ -224,10 +223,7 @@ namespace Creatio.Client
 			try {
 				using (HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post,
 					new Uri(_appUri, "0/ping"))) {
-					Cookie csrf = _cookies.GetCookies(_appUri)[BpmCsrfCookieName];
-					if (csrf != null) {
-						request.Headers.TryAddWithoutValidation(BpmCsrfCookieName, csrf.Value);
-					}
+					ApplyCsrfHeader(request);
 					using (HttpResponseMessage response = await SendInnerAsync(request, cancellationToken)
 						.ConfigureAwait(false)) { }
 				}
@@ -242,7 +238,26 @@ namespace Creatio.Client
 			CookieCollection cookies = _cookies.GetCookies(_appUri);
 			return _credentials == null
 				? cookies[".ASPXAUTH"] != null
-				: cookies[BpmCsrfCookieName] != null || _authenticated;
+				: GetCsrfCookie(cookies) != null || _authenticated;
+		}
+
+		private void ApplyCsrfHeader(HttpRequestMessage request)
+		{
+			Cookie csrf = GetCsrfCookie(_cookies.GetCookies(_appUri));
+			if (csrf != null && !string.IsNullOrEmpty(csrf.Value)
+				&& !request.Headers.Contains(csrf.Name)) {
+				request.Headers.TryAddWithoutValidation(csrf.Name, csrf.Value);
+			}
+		}
+
+		private static Cookie GetCsrfCookie(CookieCollection cookies)
+		{
+			Cookie modern = cookies[ModernCsrfCookieName];
+			if (modern != null && !string.IsNullOrEmpty(modern.Value)) {
+				return modern;
+			}
+			Cookie legacy = cookies[LegacyCsrfCookieName];
+			return legacy != null && !string.IsNullOrEmpty(legacy.Value) ? legacy : null;
 		}
 
 		private bool IsSameOrigin(Uri requestUri) => requestUri != null
