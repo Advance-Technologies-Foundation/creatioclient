@@ -269,6 +269,49 @@ namespace Creatio.Client
 			return request;
 		}
 
+		private static HttpRequestMessage CreateImageUploadRequest(string url, byte[] data,
+			string fileName, string mimeType)
+		{
+			HttpRequestMessage request = new HttpRequestMessage(HttpMethod.Post, url) {
+				Content = new ByteArrayContent(data)
+			};
+			request.Content.Headers.ContentType = new MediaTypeHeaderValue(mimeType);
+			request.Content.Headers.ContentRange = new ContentRangeHeaderValue(0, data.LongLength - 1,
+				data.LongLength);
+			request.Content.Headers.TryAddWithoutValidation("Content-Disposition",
+				$"attachment; filename={Uri.EscapeDataString(fileName)}");
+			return request;
+		}
+
+		private static Cookie CloneCookie(CreatioSessionCookie source, Uri appUri)
+		{
+			Cookie copy = new Cookie(source.Name, source.Value, string.IsNullOrEmpty(source.Path) ? "/" : source.Path) {
+				Domain = string.IsNullOrEmpty(source.Domain) ? appUri.Host : source.Domain,
+				Expires = source.Expires,
+				HttpOnly = source.HttpOnly,
+				Secure = source.Secure
+			};
+			if (!string.IsNullOrEmpty(source.Domain)) {
+				string domain = source.Domain.TrimStart('.');
+				if (!appUri.Host.Equals(domain, StringComparison.OrdinalIgnoreCase)
+					&& !appUri.Host.EndsWith("." + domain, StringComparison.OrdinalIgnoreCase)) {
+					throw new ArgumentException("A session cookie cannot target a host outside the configured Creatio application.",
+						nameof(source));
+				}
+			}
+			return copy;
+		}
+
+		private CreatioSessionCookie ToSessionCookie(Cookie source, Uri appUri)
+		{
+			string sameSite = _authenticationHandler?.GetCookieSameSite(source.Name, source.Domain, source.Path) ?? "Lax";
+			CreatioSessionCookie detached = new CreatioSessionCookie(source.Name, source.Value,
+				source.Domain, source.Path, source.HttpOnly, source.Secure, sameSite, source.Expires);
+			Cookie copy = CloneCookie(detached, appUri);
+			return new CreatioSessionCookie(copy.Name, copy.Value, copy.Domain, copy.Path, copy.HttpOnly,
+				copy.Secure, sameSite, copy.Expires);
+		}
+
 		private static CancellationTokenSource CreateTimeout(int timeoutMilliseconds,
 			CancellationToken cancellationToken)
 		{
@@ -552,6 +595,20 @@ namespace Creatio.Client
 			_oauthToken = StripBearerPrefix(bearerToken);
 		}
 
+		/// <summary>
+		/// Initializes a bearer-token client with explicit server-certificate validation behavior.
+		/// </summary>
+		/// <param name="appUrl">The URL of the Creatio application.</param>
+		/// <param name="bearerToken">The bearer token, with or without the Bearer prefix.</param>
+		/// <param name="useUntrustedSsl">Whether untrusted server certificates are accepted.</param>
+		/// <param name="isNetCore">Whether the target Creatio application uses the .NET Core route shape.</param>
+		public CreatioClient(string appUrl, string bearerToken, bool useUntrustedSsl, bool isNetCore){
+			AppUrl = appUrl;
+			_isNetCore = isNetCore;
+			_useUntrustedSsl = useUntrustedSsl;
+			_oauthToken = StripBearerPrefix(bearerToken);
+		}
+
 		private static string StripBearerPrefix(string token){
 			if (string.IsNullOrWhiteSpace(token)) {
 				return token;
@@ -565,6 +622,43 @@ namespace Creatio.Client
 		#endregion
 
 		#region Methods: Public
+
+		/// <summary>
+		/// Returns detached copies of the cookies applicable to the configured Creatio application.
+		/// Cookie values are authentication secrets and must not be logged or persisted without protection.
+		/// </summary>
+		public IReadOnlyList<CreatioSessionCookie> ExportSessionCookies()
+		{
+			ThrowIfDisposed();
+			_ = HttpClient;
+			Uri appUri = new Uri(AppUrl.TrimEnd('/') + "/");
+			return _authCookie.GetCookies(appUri).Cast<Cookie>()
+				.Select(cookie => ToSessionCookie(cookie, appUri))
+				.ToArray();
+		}
+
+		/// <summary>
+		/// Imports cookies for the configured Creatio application so an existing browser or service session
+		/// can be reused. Imported cookies are copied and cannot target another host.
+		/// </summary>
+		/// <param name="cookies">Cookies to import.</param>
+		public void ImportSessionCookies(IEnumerable<CreatioSessionCookie> cookies)
+		{
+			ThrowIfDisposed();
+			if (cookies == null) {
+				throw new ArgumentNullException(nameof(cookies));
+			}
+			_ = HttpClient;
+			Uri appUri = new Uri(AppUrl.TrimEnd('/') + "/");
+			foreach (CreatioSessionCookie cookie in cookies) {
+				if (cookie == null) {
+					throw new ArgumentException("Session cookies cannot contain null values.", nameof(cookies));
+				}
+				Cookie copy = CloneCookie(cookie, appUri);
+				_authCookie.Add(appUri, copy);
+				_authenticationHandler.SetCookieSameSite(copy.Name, copy.Domain, copy.Path, cookie.SameSite);
+			}
+		}
 
 		public static CreatioClient CreateOAuth20Client(string app, string authApp, string clientId,
 			string clientSecret,
@@ -873,6 +967,40 @@ namespace Creatio.Client
 				}
 			}
 			return lastResponse ?? CreateEmptyResponse();
+		}
+
+		/// <summary>
+		/// Uploads one complete image payload to a Creatio Image API URL. The URL carries the Image API
+		/// query parameters; this method supplies the byte body and browser-compatible content headers.
+		/// </summary>
+		/// <param name="url">Fully resolved Image API upload URL.</param>
+		/// <param name="data">Complete image bytes.</param>
+		/// <param name="fileName">File name including its image extension.</param>
+		/// <param name="mimeType">Image MIME type.</param>
+		/// <param name="requestTimeout">Request timeout in milliseconds.</param>
+		/// <param name="cancellationToken">Cancellation token.</param>
+		/// <returns>The response returned by the Image API. The caller owns and must dispose it.</returns>
+		public Task<HttpResponseMessage> UploadImageAsync(string url, byte[] data, string fileName,
+			string mimeType, int requestTimeout = 100_000,
+			CancellationToken cancellationToken = default(CancellationToken))
+		{
+			if (string.IsNullOrWhiteSpace(url)) {
+				throw new ArgumentException("The image upload URL cannot be empty.", nameof(url));
+			}
+			if (data == null) {
+				throw new ArgumentNullException(nameof(data));
+			}
+			if (data.Length == 0) {
+				throw new ArgumentException("The image payload cannot be empty.", nameof(data));
+			}
+			if (string.IsNullOrWhiteSpace(fileName)) {
+				throw new ArgumentException("The image file name cannot be empty.", nameof(fileName));
+			}
+			if (string.IsNullOrWhiteSpace(mimeType)) {
+				throw new ArgumentException("The image MIME type cannot be empty.", nameof(mimeType));
+			}
+			return SendAsync(() => CreateImageUploadRequest(url, data, fileName, mimeType), requestTimeout,
+				1, _delaySec, cancellationToken);
 		}
 
 		public string UploadChunkAlmFile(string url, byte[] data, int downloadedSize, int totalSize) {

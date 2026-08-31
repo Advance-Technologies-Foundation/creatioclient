@@ -129,6 +129,249 @@ public class ModernHttpClientTransportTests
 		}
 	}
 
+	[TestCase("POST")]
+	[TestCase("PUT")]
+	[TestCase("PATCH")]
+	[TestCase("DELETE")]
+	[Description("Every cookie-authenticated mutable request echoes a modern CRT_CSRF token under its issued name.")]
+	public async Task AuthenticationHandler_ShouldSendModernCsrfHeader_WhenMutableRequestUsesCookieSession(
+		string method)
+	{
+		// Arrange
+		Uri appUri = new("https://creatio.test/");
+		CookieContainer cookies = new();
+		cookies.Add(appUri, new Cookie(".ASPXAUTH", "session-token"));
+		cookies.Add(appUri, new Cookie("CRT_CSRF", "modern-token"));
+		SequenceHandler inner = new(_ => Response(HttpStatusCode.OK, "ok"));
+		using CreatioAuthenticationHandler authentication = new(appUri, cookies, "user", "password", null,
+			() => null, () => null, () => true, true, inner);
+		using HttpMessageInvoker invoker = new(authentication);
+
+		// Act
+		using HttpResponseMessage response = await invoker.SendAsync(
+			new HttpRequestMessage(new HttpMethod(method), appUri), CancellationToken.None);
+
+		// Assert
+		inner.Requests.Should().ContainSingle(because: "one mutable request was sent");
+		inner.Requests[0].Headers.GetValues("CRT_CSRF").Should().ContainSingle().Which.Should()
+			.Be("modern-token", because: "the token must be echoed under the modern cookie name");
+		inner.Requests[0].Headers.Should().NotContain(header => header.Key == "BPMCSRF",
+			because: "the legacy name must not be invented for a modern session");
+	}
+
+	[Test]
+	[Description("The modern token wins when a transition environment issues both CSRF cookie names.")]
+	public async Task AuthenticationHandler_ShouldPreferModernCsrfHeader_WhenBothCookiesExist()
+	{
+		// Arrange
+		Uri appUri = new("https://creatio.test/");
+		CookieContainer cookies = new();
+		cookies.Add(appUri, new Cookie(".ASPXAUTH", "session-token"));
+		cookies.Add(appUri, new Cookie("BPMCSRF", "legacy-token"));
+		cookies.Add(appUri, new Cookie("CRT_CSRF", "modern-token"));
+		SequenceHandler inner = new(_ => Response(HttpStatusCode.OK, "ok"));
+		using CreatioAuthenticationHandler authentication = new(appUri, cookies, "user", "password", null,
+			() => null, () => null, () => true, true, inner);
+		using HttpMessageInvoker invoker = new(authentication);
+
+		// Act
+		using HttpResponseMessage response = await invoker.SendAsync(
+			new HttpRequestMessage(HttpMethod.Post, appUri), CancellationToken.None);
+
+		// Assert
+		inner.Requests[0].Headers.GetValues("CRT_CSRF").Should().ContainSingle().Which.Should()
+			.Be("modern-token", because: "current Creatio runtimes issue CRT_CSRF");
+		inner.Requests[0].Headers.Should().NotContain(header => header.Key == "BPMCSRF",
+			because: "only the selected cookie name may be echoed");
+	}
+
+	[Test]
+	[Description("A tokenless cookie session reaches the server without a fabricated CSRF header.")]
+	public async Task AuthenticationHandler_ShouldOmitCsrfHeader_WhenSessionHasNoCsrfCookie()
+	{
+		// Arrange
+		Uri appUri = new("https://creatio.test/");
+		CookieContainer cookies = new();
+		cookies.Add(appUri, new Cookie(".ASPXAUTH", "session-token"));
+		SequenceHandler inner = new(_ => Response(HttpStatusCode.OK, "ok"));
+		using CreatioAuthenticationHandler authentication = new(appUri, cookies, "user", "password", null,
+			() => null, () => null, () => true, true, inner);
+		using HttpMessageInvoker invoker = new(authentication);
+
+		// Act
+		using HttpResponseMessage response = await invoker.SendAsync(
+			new HttpRequestMessage(HttpMethod.Post, appUri), CancellationToken.None);
+
+		// Assert
+		inner.Requests[0].Headers.Should().NotContain(header =>
+			header.Key == "CRT_CSRF" || header.Key == "BPMCSRF",
+			because: "the server is authoritative when CSRF validation is disabled");
+	}
+
+	[Test]
+	[Description("Image API upload uses authenticated transport and the exact browser-compatible binary headers.")]
+	public async Task UploadImageAsync_ShouldSendBinaryPayloadAndImageApiHeaders()
+	{
+		// Arrange
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(new ScriptedResponse(Body: "{}"));
+		using CreatioClient client = new(server.BaseUri.ToString(), "token");
+		byte[] payload = { 1, 2, 3, 4 };
+
+		// Act
+		using HttpResponseMessage response = await client.UploadImageAsync(
+			new Uri(server.BaseUri, "ImageAPIService/upload?fileId=1").ToString(), payload,
+			"brand logo.png", "image/png");
+		CapturedRequest request = (await capture).Single();
+
+		// Assert
+		request.Method.Should().Be("POST", because: "the Image API accepts a single POST");
+		request.Body.Should().Equal(payload, because: "the image bytes must not be transformed");
+		request.Headers["Content-Type"].Should().Be("image/png", because: "the server validates the MIME type");
+		request.Headers["Content-Range"].Should().Be("bytes 0-3/4",
+			because: "the range end is inclusive and zero based");
+		request.Headers["Content-Disposition"].Should().Be("attachment; filename=brand%20logo.png",
+			because: "Creatio rejects quoted or filename-star forms for this endpoint");
+	}
+
+	[Test]
+	[Description("Session cookies can be imported for reuse and exported as detached copies for browser storage.")]
+	public async Task SessionCookies_ShouldRoundTripWithoutSharingMutableCookieInstances()
+	{
+		// Arrange
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(new ScriptedResponse(Body: "ok"));
+		using CreatioClient client = new(server.BaseUri.ToString(), "user", "password") { SkipPing = true };
+		CreatioSessionCookie authCookie = new(".ASPXAUTH", "session-token", string.Empty, "/",
+			httpOnly: true, secure: false, sameSite: "Strict", DateTime.MinValue);
+		CreatioSessionCookie csrfCookie = new("CRT_CSRF", "csrf-token", server.BaseUri.Host, "/",
+			httpOnly: false, secure: false, sameSite: "None", DateTime.MinValue);
+		CreatioSessionCookie normalizedCookie = new("custom", "value", server.BaseUri.Host, "/",
+			httpOnly: false, secure: false, sameSite: "unexpected", DateTime.MinValue);
+		CreatioSessionCookie nullPolicyCookie = new("custom-null", "value", server.BaseUri.Host, "/",
+			httpOnly: false, secure: false, sameSite: null, DateTime.MinValue);
+		CreatioSessionCookie rootIdentityCookie = new("SID", "root", server.BaseUri.Host, "/",
+			httpOnly: false, secure: false, sameSite: "Lax", DateTime.MinValue);
+		CreatioSessionCookie nestedIdentityCookie = new("SID", "nested", server.BaseUri.Host, "/nested",
+			httpOnly: false, secure: false, sameSite: "Strict", DateTime.MinValue);
+		client.ImportSessionCookies(new[] { authCookie, csrfCookie, normalizedCookie, nullPolicyCookie,
+			rootIdentityCookie, nestedIdentityCookie });
+
+		// Act
+		using HttpResponseMessage response = await client.ExecuteGetRequestAsync(server.BaseUri.ToString());
+		IReadOnlyList<CreatioSessionCookie> exported = client.ExportSessionCookies();
+		CapturedRequest request = (await capture).Single();
+
+		// Assert
+		request.Headers["Cookie"].Should().Contain(".ASPXAUTH=session-token",
+			because: "the imported session is reused without another login");
+		request.Headers["CRT_CSRF"].Should().Be("csrf-token",
+			because: "the imported modern token is applied to the request");
+		exported.Should().Contain(cookie => cookie.Name == ".ASPXAUTH" && cookie.Value == "session-token",
+			because: "exported cookies are detached from the caller's mutable input");
+		exported.Single(cookie => cookie.Name == ".ASPXAUTH").SameSite.Should().Be("Strict",
+			because: "browser storage must retain the server's cookie policy");
+		exported.Single(cookie => cookie.Name == "CRT_CSRF").SameSite.Should().Be("None",
+			because: "an explicit cross-site cookie policy must not be downgraded to Lax");
+		exported.Where(cookie => cookie.Name.StartsWith("custom", StringComparison.Ordinal))
+			.Should().OnlyContain(cookie => cookie.SameSite == "Lax",
+				because: "unknown or absent browser policies must normalize to the safe default");
+		exported.Single(cookie => cookie.Name == "SID").SameSite.Should().Be("Lax",
+			because: "a same-name cookie on another path has a distinct browser policy");
+	}
+
+	[Test]
+	[Description("Session export preserves SameSite attributes received from Creatio login.")]
+	public async Task ExportSessionCookies_ShouldPreserveSameSite_FromLoginResponse()
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(new ScriptedResponse(
+			Body: "{\"Code\":0}",
+			Headers: new Dictionary<string, string[]> {
+				["Set-Cookie"] = new[] {
+					".ASPXAUTH=session-token; Path=/; HttpOnly; SameSite=Strict",
+					"CRT_CSRF=csrf-token; Path=/; SameSite=None",
+					"BPMCSRF=legacy-token; Path=/"
+				}
+			}));
+		using CreatioClient client = new(server.BaseUri.ToString(), "user", "password") { SkipPing = true };
+
+		using HttpResponseMessage response = await client.LoginAsync();
+		IReadOnlyList<CreatioSessionCookie> exported = client.ExportSessionCookies();
+		await capture;
+
+		exported.Single(cookie => cookie.Name == ".ASPXAUTH").SameSite.Should().Be("Strict",
+			because: "strict browser-session policy must survive the HTTP cookie jar");
+		exported.Single(cookie => cookie.Name == "CRT_CSRF").SameSite.Should().Be("None",
+			because: "cross-site browser-session policy must survive the HTTP cookie jar");
+		exported.Single(cookie => cookie.Name == "BPMCSRF").SameSite.Should().Be("Lax",
+			because: "a cookie without SameSite metadata uses the safe browser default");
+	}
+
+	[Test]
+	[Description("A replacement cookie without SameSite resets stale metadata to the safe default.")]
+	public async Task ExportSessionCookies_ShouldResetSameSite_WhenReplacementOmitsAttribute()
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			new ScriptedResponse(Body: "{\"Code\":0}", Headers: new Dictionary<string, string[]> {
+				["Set-Cookie"] = new[] { ".ASPXAUTH=first; Path=/; SameSite=None" }
+			}),
+			new ScriptedResponse(Body: "{\"Code\":0}", Headers: new Dictionary<string, string[]> {
+				["Set-Cookie"] = new[] { ".ASPXAUTH=second; Path=/" }
+			}));
+		using CreatioClient client = new(server.BaseUri.ToString(), "user", "password") { SkipPing = true };
+
+		using (HttpResponseMessage first = await client.LoginAsync()) { }
+		using (HttpResponseMessage second = await client.LoginAsync()) { }
+		IReadOnlyList<CreatioSessionCookie> exported = client.ExportSessionCookies();
+		await capture;
+
+		exported.Single(cookie => cookie.Name == ".ASPXAUTH").SameSite.Should().Be("Lax",
+			because: "the current server response omitted SameSite and must not inherit a prior value");
+	}
+
+	[Test]
+	[Description("Session export defaults cookies without captured browser metadata to SameSite Lax.")]
+	public void ExportSessionCookies_ShouldUseLax_WhenCookieHasNoMetadata()
+	{
+		Uri appUri = new("https://creatio.test/");
+		using CreatioClient client = new(appUri.ToString(), "token");
+		client.AuthCookie.Add(appUri, new Cookie("manual", "value"));
+
+		IReadOnlyList<CreatioSessionCookie> exported = client.ExportSessionCookies();
+
+		exported.Single(cookie => cookie.Name == "manual").SameSite.Should().Be("Lax",
+			because: "a cookie not received or imported through the metadata bridge uses the safe default");
+	}
+
+	[Test]
+	[Description("Cookie metadata ignores invalid domains and headers not accepted by the shared cookie jar.")]
+	public async Task AuthenticationHandler_ShouldIgnoreMetadata_WhenSetCookieIsNotAccepted()
+	{
+		Uri appUri = new("https://creatio.test/");
+		CookieContainer cookies = new();
+		cookies.Add(appUri, new Cookie("existing", "value"));
+		SequenceHandler inner = new(request => {
+			HttpResponseMessage response = Response(HttpStatusCode.OK, "ok");
+			response.RequestMessage = request;
+			response.Headers.TryAddWithoutValidation("Set-Cookie", new[] {
+				"foreign=value; Domain=other.invalid; Path=/",
+				"not-stored=value; Path=/; SameSite=Strict"
+			});
+			return response;
+		});
+		using CreatioAuthenticationHandler authentication = new(appUri, cookies, null, null, null,
+			() => "token", () => null, () => true, true, inner);
+		using HttpMessageInvoker invoker = new(authentication);
+
+		using HttpResponseMessage response = await invoker.SendAsync(
+			new HttpRequestMessage(HttpMethod.Get, appUri), CancellationToken.None);
+
+		response.StatusCode.Should().Be(HttpStatusCode.OK,
+			because: "unaccepted metadata must not disrupt the authenticated response");
+	}
+
 	[Test]
 	public async Task DisposedClient_ShouldRejectNewRequests()
 	{
@@ -175,11 +418,129 @@ public class ModernHttpClientTransportTests
 		await capture;
 	}
 
+	[TestCase(2)]
+	[TestCase(8)]
+	[Description("LoginAsync rejects every nonzero Creatio authentication result code.")]
+	public async Task LoginAsync_ShouldRejectEveryNonzeroCreatioCode(int code)
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			new ScriptedResponse(Body: $"{{\"Code\":{code}}}"));
+		using CreatioClient client = new(server.BaseUri.ToString(), "user", "password");
+
+		Func<Task> act = async () => {
+			using HttpResponseMessage response = await client.LoginAsync();
+		};
+
+		await act.Should().ThrowAsync<UnauthorizedAccessException>(
+			because: "only Code zero represents an authenticated Creatio session");
+		await capture;
+	}
+
+	[TestCase("{}")]
+	[TestCase("not-json")]
+	[TestCase("{\"Code\":9223372036854775808}")]
+	[Description("LoginAsync rejects malformed authentication result envelopes.")]
+	public async Task LoginAsync_ShouldRejectMalformedCreatioCode(string body)
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(new ScriptedResponse(Body: body));
+		using CreatioClient client = new(server.BaseUri.ToString(), "user", "password");
+
+		Func<Task> act = async () => {
+			using HttpResponseMessage response = await client.LoginAsync();
+		};
+
+		await act.Should().ThrowAsync<UnauthorizedAccessException>(
+			because: "a response without an explicit Code zero cannot establish a session");
+		await capture;
+	}
+
+	[Test]
+	[Description("A rejected login cannot leave response cookies usable by a later request.")]
+	public async Task LoginAsync_ShouldDiscardCookies_WhenCreatioCodeRejectsAuthentication()
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			new ScriptedResponse(Body: "{\"Code\":2}", Headers: new Dictionary<string, string[]> {
+				["Set-Cookie"] = new[] { ".ASPXAUTH=rejected; Path=/data", "CRT_CSRF=rejected-csrf; Path=/data" }
+			}),
+			LoginResponse("accepted", "accepted-csrf"),
+			new ScriptedResponse(Body: "data"));
+		using CreatioClient client = new(server.BaseUri.ToString(), "user", "password") { SkipPing = true };
+
+		Func<Task> rejectedLogin = async () => {
+			using HttpResponseMessage response = await client.LoginAsync();
+		};
+		await rejectedLogin.Should().ThrowAsync<UnauthorizedAccessException>();
+		using HttpResponseMessage data = await client.ExecuteGetRequestAsync(new Uri(server.BaseUri, "data").ToString());
+		IReadOnlyList<CapturedRequest> requests = await capture;
+
+		requests.Count(request => request.Target.EndsWith("/ServiceModel/AuthService.svc/Login",
+			StringComparison.Ordinal)).Should().Be(2,
+			because: "the rejected response cookie cannot satisfy the next authentication check");
+		requests.Last().Headers["Cookie"].Should().Contain(".ASPXAUTH=accepted")
+			.And.NotContain(".ASPXAUTH=rejected",
+				because: "only the successfully authenticated session may reach application data");
+	}
+
+	[Test]
+	[Description("An HTTP authentication failure cannot leave response cookies usable by a later request.")]
+	public async Task LoginAsync_ShouldDiscardCookies_WhenHttpStatusRejectsAuthentication()
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			new ScriptedResponse(StatusCode: 401, Body: "rejected", Headers: new Dictionary<string, string[]> {
+				["Set-Cookie"] = new[] { ".ASPXAUTH=rejected; Path=/", "CRT_CSRF=rejected-csrf; Path=/" }
+			}),
+			LoginResponse("accepted", "accepted-csrf"),
+			new ScriptedResponse(Body: "data"));
+		using CreatioClient client = new(server.BaseUri.ToString(), "user", "password") { SkipPing = true };
+
+		using (HttpResponseMessage rejected = await client.LoginAsync()) {
+			rejected.StatusCode.Should().Be(HttpStatusCode.Unauthorized,
+				because: "protocol-error response compatibility remains intact");
+		}
+		using HttpResponseMessage data = await client.ExecuteGetRequestAsync(new Uri(server.BaseUri, "data").ToString());
+		IReadOnlyList<CapturedRequest> requests = await capture;
+
+		requests.Count(request => request.Target.EndsWith("/ServiceModel/AuthService.svc/Login",
+			StringComparison.Ordinal)).Should().Be(2,
+			because: "a non-success response cookie cannot satisfy the next authentication check");
+		requests.Last().Headers["Cookie"].Should().Contain(".ASPXAUTH=accepted")
+			.And.NotContain(".ASPXAUTH=rejected",
+				because: "only a successful login may establish the application session");
+	}
+
+	[Test]
+	[Description("Failed-login cleanup safely ignores malformed, unrelated, and pathless Set-Cookie headers.")]
+	public async Task LoginAsync_ShouldIgnoreNonSessionCookieHeaders_WhenAuthenticationFails()
+	{
+		Uri appUri = new("https://creatio.test/");
+		SequenceHandler inner = new(request => {
+			HttpResponseMessage response = Response(HttpStatusCode.Unauthorized, "rejected");
+			response.RequestMessage = request;
+			response.Headers.TryAddWithoutValidation("Set-Cookie", new[] {
+				"malformed",
+				"unrelated=value; Path=/data",
+				".ASPXAUTH=value"
+			});
+			return response;
+		});
+		using CreatioAuthenticationHandler authentication = new(appUri, new CookieContainer(), "user",
+			"password", null, () => null, () => null, () => true, true, inner);
+
+		using HttpResponseMessage response = await authentication.LoginAsync(1000, CancellationToken.None);
+
+		response.StatusCode.Should().Be(HttpStatusCode.Unauthorized,
+			because: "irrelevant response-cookie syntax must not replace the protocol error response");
+	}
+
 	[Test]
 	public async Task LoginAsync_ShouldApplyTimeoutWhileReadingResponseBody()
 	{
 		await using ScriptedLoopbackHttpServer server = new();
-		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+		_ = server.CaptureAsync(
 			LoginResponse() with { BodyDelay = TimeSpan.FromMilliseconds(400) });
 		using CreatioClient client = new(server.BaseUri.ToString(), "user", "password");
 
@@ -188,7 +549,44 @@ public class ModernHttpClientTransportTests
 		};
 
 		await act.Should().ThrowAsync<OperationCanceledException>();
-		await capture;
+	}
+
+	[Test]
+	[Description("A login body-read failure invalidates every session cookie received in its headers.")]
+	public async Task LoginAsync_ShouldDiscardCookies_WhenBodyValidationFails()
+	{
+		Uri appUri = new("https://creatio.test/");
+		CookieContainer cookies = new();
+		SequenceHandler inner = new(
+			request => {
+				cookies.Add(appUri, new Cookie(".ASPXAUTH", "unvalidated", "/data", appUri.Host));
+				cookies.Add(appUri, new Cookie("CRT_CSRF", "unvalidated-csrf", "/data", appUri.Host));
+				HttpResponseMessage response = new(HttpStatusCode.OK) { Content = new ThrowingContent() };
+				response.Headers.TryAddWithoutValidation("Set-Cookie", new[] {
+					".ASPXAUTH=unvalidated; Path=/data", "CRT_CSRF=unvalidated-csrf; Path=/data"
+				});
+				return response;
+			},
+			request => {
+				cookies.Add(appUri, new Cookie(".ASPXAUTH", "accepted", "/", appUri.Host));
+				cookies.Add(appUri, new Cookie("CRT_CSRF", "accepted-csrf", "/", appUri.Host));
+				return Response(HttpStatusCode.OK, "{\"Code\":0}");
+			},
+			request => Response(HttpStatusCode.OK, "data"));
+		using CreatioAuthenticationHandler authentication = new(appUri, cookies, "user", "password", null,
+			() => null, () => null, () => true, true, inner);
+		using HttpMessageInvoker invoker = new(authentication);
+
+		Func<Task> rejectedLogin = async () => {
+			using HttpResponseMessage response = await authentication.LoginAsync(1000, CancellationToken.None);
+		};
+		await rejectedLogin.Should().ThrowAsync<HttpRequestException>();
+		using HttpResponseMessage data = await invoker.SendAsync(
+			new HttpRequestMessage(HttpMethod.Get, new Uri(appUri, "data")), CancellationToken.None);
+
+		cookies.GetCookies(new Uri(appUri, "data")).Cast<Cookie>().Select(cookie => cookie.Value)
+			.Should().Contain("accepted").And.NotContain("unvalidated",
+				because: "headers from a login whose body was never validated cannot establish a session");
 	}
 
 	[Test]

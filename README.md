@@ -83,6 +83,29 @@ The caller owns every `HttpResponseMessage` returned by an async operation and m
 The existing synchronous methods remain available and retain their string, file, and exception behavior.
 Cookie-authenticated requests automatically renew an expired Creatio session once and replay the request;
 if the replay is still unauthorized, its response is returned without another login attempt.
+Cookie authentication also echoes the CSRF token under the name issued by Creatio: current
+`CRT_CSRF` is preferred, legacy `BPMCSRF` remains supported, and no header is invented when the
+environment issues neither cookie. OAuth requests remain bearer-only.
+
+Browser and service integrations can reuse the same session without implementing another login client:
+```csharp
+client.ImportSessionCookies(existingCookies);
+IReadOnlyList<CreatioSessionCookie> cookiesForBrowserStorage = client.ExportSessionCookies();
+```
+The detached cookies preserve browser-relevant `HttpOnly`, `Secure`, `SameSite`, and expiry metadata and
+contain authentication secrets. Protect them like credentials.
+
+Bearer integrations that need an explicit certificate policy can use the four-argument constructor:
+```csharp
+using CreatioClient client = new(appUrl, bearerToken, useUntrustedSsl: false, isNetCore: true);
+```
+
+Use `UploadImageAsync` for the Creatio Image API's single-request binary upload. The caller supplies the
+fully resolved Image API URL and owns the returned response:
+```csharp
+using HttpResponseMessage upload = await client.UploadImageAsync(
+    imageApiUrl, imageBytes, "logo.png", "image/png", cancellationToken: cancellationToken);
+```
 For synchronous protocol errors, `WebException.Response` remains castable to `HttpWebResponse` and
 preserves the status, description, headers, request URI, method, and buffered error body used by known
 consumers. It is a bounded compatibility view; use the async API when other response metadata is required.
