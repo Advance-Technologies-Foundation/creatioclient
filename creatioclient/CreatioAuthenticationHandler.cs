@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -6,6 +8,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace Creatio.Client
 {
@@ -24,6 +27,8 @@ namespace Creatio.Client
 		private readonly Func<bool> _skipPing;
 		private readonly bool _isNetCore;
 		private readonly SemaphoreSlim _loginLock = new SemaphoreSlim(1, 1);
+		private readonly ConcurrentDictionary<string, string> _cookieSameSite =
+			new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 		private bool _authenticated;
 		private int _authenticationGeneration;
 
@@ -59,6 +64,14 @@ namespace Creatio.Client
 
 		public Task EnsureAuthenticatedForRequestAsync(CancellationToken cancellationToken) =>
 			EnsureAuthenticatedAsync(cancellationToken);
+
+		public string GetCookieSameSite(string cookieName, string domain, string path) =>
+			_cookieSameSite.TryGetValue(BuildCookieMetadataKey(cookieName, domain, path), out string sameSite)
+				? sameSite
+				: "Lax";
+
+		public void SetCookieSameSite(string cookieName, string domain, string path, string sameSite) =>
+			_cookieSameSite[BuildCookieMetadataKey(cookieName, domain, path)] = NormalizeSameSite(sameSite);
 
 		protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
 			CancellationToken cancellationToken)
@@ -143,16 +156,67 @@ namespace Creatio.Client
 		private void InvalidateSession()
 		{
 			_authenticated = false;
-			ExpireCookie(".ASPXAUTH");
-			ExpireCookie(ModernCsrfCookieName);
-			ExpireCookie(LegacyCsrfCookieName);
+			HashSet<string> expired = new HashSet<string>(StringComparer.Ordinal);
+			ExpireAuthenticationCookies(_appUri, expired);
+			ExpireAuthenticationCookies(new Uri(_appUri, "ServiceModel/AuthService.svc/Login"), expired);
 		}
 
-		private void ExpireCookie(string name)
+		private void InvalidateSession(HttpResponseMessage response)
 		{
-			Cookie cookie = _cookies.GetCookies(_appUri)[name];
-			if (cookie != null) {
-				cookie.Expired = true;
+			InvalidateSession();
+			Uri requestUri = new Uri(_appUri, "ServiceModel/AuthService.svc/Login");
+			if (!response.Headers.TryGetValues("Set-Cookie", out IEnumerable<string> headers)) {
+				return;
+			}
+			foreach (string header in headers) {
+				ExpireAuthenticationCookieFromHeader(requestUri, header);
+			}
+		}
+
+		private void ExpireAuthenticationCookies(Uri uri, HashSet<string> expired)
+		{
+			foreach (Cookie cookie in _cookies.GetCookies(uri)) {
+				if (cookie.Name != ".ASPXAUTH" && cookie.Name != ModernCsrfCookieName
+					&& cookie.Name != LegacyCsrfCookieName) {
+					continue;
+				}
+				string key = BuildCookieMetadataKey(cookie.Name, cookie.Domain, cookie.Path);
+				if (expired.Add(key)) {
+					cookie.Expired = true;
+					_cookieSameSite.TryRemove(key, out _);
+				}
+			}
+		}
+
+		private void ExpireAuthenticationCookieFromHeader(Uri requestUri, string header)
+		{
+			string[] parts = header.Split(';');
+			string[] nameValue = parts[0].Split(new[] { '=' }, 2);
+			if (nameValue.Length != 2) {
+				return;
+			}
+			string name = nameValue[0].Trim();
+			if (name != ".ASPXAUTH" && name != ModernCsrfCookieName && name != LegacyCsrfCookieName) {
+				return;
+			}
+			string path = null;
+			foreach (string part in parts) {
+				string attribute = part.Trim();
+				if (attribute.StartsWith("Path=", StringComparison.OrdinalIgnoreCase)) {
+					path = attribute.Substring("Path=".Length);
+					break;
+				}
+			}
+			if (string.IsNullOrEmpty(path)) {
+				return;
+			}
+			Uri probeUri = new Uri(requestUri.GetLeftPart(UriPartial.Authority) + "/" +
+				path.Trim('/').TrimEnd('/') + "/clio-cookie-invalidation");
+			foreach (Cookie cookie in _cookies.GetCookies(probeUri)) {
+				if (cookie.Name == name && cookie.Path == path) {
+					cookie.Expired = true;
+					_cookieSameSite.TryRemove(BuildCookieMetadataKey(cookie.Name, cookie.Domain, cookie.Path), out _);
+				}
 			}
 		}
 
@@ -169,9 +233,19 @@ namespace Creatio.Client
 				Content = new StringContent(body, Encoding.UTF8, "application/json")
 			}) {
 				HttpResponseMessage response = await SendInnerAsync(request, cancellationToken).ConfigureAwait(false);
-				string responseBody = await ReadLoginContentAsync(response, cancellationToken)
-					.ConfigureAwait(false);
-				if (responseBody.Contains("\"Code\":1")) {
+				string responseBody;
+				try {
+					responseBody = await ReadLoginContentAsync(response, cancellationToken).ConfigureAwait(false);
+				} catch {
+					InvalidateSession(response);
+					throw;
+				}
+				if (!response.IsSuccessStatusCode) {
+					InvalidateSession(response);
+					return response;
+				}
+				if (!HasSuccessfulLoginCode(responseBody)) {
+					InvalidateSession(response);
 					response.Dispose();
 					throw new UnauthorizedAccessException($"Unauthorized {_userName} for {_appUri.ToString().TrimEnd('/')}");
 				}
@@ -286,6 +360,7 @@ namespace Creatio.Client
 				for (int redirectCount = 0; redirectCount < 50; redirectCount++) {
 					HttpResponseMessage response = await AwaitWithCancellationAsync(
 						base.SendAsync(current, cancellationToken), cancellationToken).ConfigureAwait(false);
+			CaptureCookieMetadata(response);
 					if (!IsRedirect(response.StatusCode) || response.Headers.Location == null) {
 						return response;
 					}
@@ -313,6 +388,75 @@ namespace Creatio.Client
 				}
 			}
 		}
+
+		private void CaptureCookieMetadata(HttpResponseMessage response)
+		{
+			Uri requestUri = response.RequestMessage?.RequestUri;
+			if (requestUri == null
+				|| !response.Headers.TryGetValues("Set-Cookie", out IEnumerable<string> headers)) {
+				return;
+			}
+			foreach (string header in headers) {
+				CookieContainer parsed = new CookieContainer();
+				try {
+					parsed.SetCookies(requestUri, header);
+				} catch (CookieException) {
+					continue;
+				}
+				string sameSite = ReadSameSite(header);
+				CookieCollection actualCookies = _cookies.GetCookies(requestUri);
+				foreach (Cookie declared in parsed.GetCookies(requestUri)) {
+					foreach (Cookie actual in actualCookies) {
+						if (SameCookieIdentity(actual, declared) && actual.Value == declared.Value) {
+							SetCookieSameSite(actual.Name, actual.Domain, actual.Path, sameSite);
+							break;
+						}
+					}
+				}
+			}
+		}
+
+		private static bool HasSuccessfulLoginCode(string responseBody)
+		{
+			try {
+				JToken code = JObject.Parse(responseBody)["Code"];
+				return code != null && code.Type == JTokenType.Integer
+					&& code.ToString(Formatting.None) == "0";
+			} catch (JsonException) {
+				return false;
+			}
+		}
+
+		private static string NormalizeSameSite(string value)
+		{
+			if (string.Equals(value?.Trim(), "Strict", StringComparison.OrdinalIgnoreCase)) {
+				return "Strict";
+			}
+			if (string.Equals(value?.Trim(), "None", StringComparison.OrdinalIgnoreCase)) {
+				return "None";
+			}
+			return "Lax";
+		}
+
+		private static string ReadSameSite(string header)
+		{
+			foreach (string part in header.Split(';')) {
+				string attribute = part.Trim();
+				if (attribute.StartsWith("SameSite=", StringComparison.OrdinalIgnoreCase)) {
+					return attribute.Substring("SameSite=".Length);
+				}
+			}
+			return null;
+		}
+
+		private static bool SameCookieIdentity(Cookie left, Cookie right) =>
+			string.Equals(left.Name, right.Name, StringComparison.OrdinalIgnoreCase)
+			&& string.Equals(left.Domain.TrimStart('.'), right.Domain.TrimStart('.'),
+				StringComparison.OrdinalIgnoreCase)
+			&& string.Equals(left.Path, right.Path, StringComparison.Ordinal);
+
+		private static string BuildCookieMetadataKey(string name, string domain, string path) =>
+			$"{name.ToUpperInvariant()}|{domain.TrimStart('.').ToUpperInvariant()}|{path}";
 
 		private static HttpRequestMessage CreateRedirectRequest(HttpRequestMessage request,
 			HttpStatusCode statusCode, Uri location)

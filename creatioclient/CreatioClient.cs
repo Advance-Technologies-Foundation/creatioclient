@@ -283,7 +283,7 @@ namespace Creatio.Client
 			return request;
 		}
 
-		private static Cookie CloneCookie(Cookie source, Uri appUri)
+		private static Cookie CloneCookie(CreatioSessionCookie source, Uri appUri)
 		{
 			Cookie copy = new Cookie(source.Name, source.Value, string.IsNullOrEmpty(source.Path) ? "/" : source.Path) {
 				Domain = string.IsNullOrEmpty(source.Domain) ? appUri.Host : source.Domain,
@@ -300,6 +300,16 @@ namespace Creatio.Client
 				}
 			}
 			return copy;
+		}
+
+		private CreatioSessionCookie ToSessionCookie(Cookie source, Uri appUri)
+		{
+			string sameSite = _authenticationHandler?.GetCookieSameSite(source.Name, source.Domain, source.Path) ?? "Lax";
+			CreatioSessionCookie detached = new CreatioSessionCookie(source.Name, source.Value,
+				source.Domain, source.Path, source.HttpOnly, source.Secure, sameSite, source.Expires);
+			Cookie copy = CloneCookie(detached, appUri);
+			return new CreatioSessionCookie(copy.Name, copy.Value, copy.Domain, copy.Path, copy.HttpOnly,
+				copy.Secure, sameSite, copy.Expires);
 		}
 
 		private static CancellationTokenSource CreateTimeout(int timeoutMilliseconds,
@@ -585,6 +595,20 @@ namespace Creatio.Client
 			_oauthToken = StripBearerPrefix(bearerToken);
 		}
 
+		/// <summary>
+		/// Initializes a bearer-token client with explicit server-certificate validation behavior.
+		/// </summary>
+		/// <param name="appUrl">The URL of the Creatio application.</param>
+		/// <param name="bearerToken">The bearer token, with or without the Bearer prefix.</param>
+		/// <param name="useUntrustedSsl">Whether untrusted server certificates are accepted.</param>
+		/// <param name="isNetCore">Whether the target Creatio application uses the .NET Core route shape.</param>
+		public CreatioClient(string appUrl, string bearerToken, bool useUntrustedSsl, bool isNetCore){
+			AppUrl = appUrl;
+			_isNetCore = isNetCore;
+			_useUntrustedSsl = useUntrustedSsl;
+			_oauthToken = StripBearerPrefix(bearerToken);
+		}
+
 		private static string StripBearerPrefix(string token){
 			if (string.IsNullOrWhiteSpace(token)) {
 				return token;
@@ -603,12 +627,13 @@ namespace Creatio.Client
 		/// Returns detached copies of the cookies applicable to the configured Creatio application.
 		/// Cookie values are authentication secrets and must not be logged or persisted without protection.
 		/// </summary>
-		public IReadOnlyList<Cookie> ExportSessionCookies()
+		public IReadOnlyList<CreatioSessionCookie> ExportSessionCookies()
 		{
 			ThrowIfDisposed();
+			_ = HttpClient;
 			Uri appUri = new Uri(AppUrl.TrimEnd('/') + "/");
 			return _authCookie.GetCookies(appUri).Cast<Cookie>()
-				.Select(cookie => CloneCookie(cookie, appUri))
+				.Select(cookie => ToSessionCookie(cookie, appUri))
 				.ToArray();
 		}
 
@@ -617,18 +642,21 @@ namespace Creatio.Client
 		/// can be reused. Imported cookies are copied and cannot target another host.
 		/// </summary>
 		/// <param name="cookies">Cookies to import.</param>
-		public void ImportSessionCookies(IEnumerable<Cookie> cookies)
+		public void ImportSessionCookies(IEnumerable<CreatioSessionCookie> cookies)
 		{
 			ThrowIfDisposed();
 			if (cookies == null) {
 				throw new ArgumentNullException(nameof(cookies));
 			}
+			_ = HttpClient;
 			Uri appUri = new Uri(AppUrl.TrimEnd('/') + "/");
-			foreach (Cookie cookie in cookies) {
+			foreach (CreatioSessionCookie cookie in cookies) {
 				if (cookie == null) {
 					throw new ArgumentException("Session cookies cannot contain null values.", nameof(cookies));
 				}
-				_authCookie.Add(appUri, CloneCookie(cookie, appUri));
+				Cookie copy = CloneCookie(cookie, appUri);
+				_authCookie.Add(appUri, copy);
+				_authenticationHandler.SetCookieSameSite(copy.Name, copy.Domain, copy.Path, cookie.SameSite);
 			}
 		}
 

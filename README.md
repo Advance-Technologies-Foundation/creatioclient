@@ -90,9 +90,15 @@ environment issues neither cookie. OAuth requests remain bearer-only.
 Browser and service integrations can reuse the same session without implementing another login client:
 ```csharp
 client.ImportSessionCookies(existingCookies);
-IReadOnlyList<Cookie> cookiesForBrowserStorage = client.ExportSessionCookies();
+IReadOnlyList<CreatioSessionCookie> cookiesForBrowserStorage = client.ExportSessionCookies();
 ```
-The returned cookies are detached copies and contain authentication secrets. Protect them like credentials.
+The detached cookies preserve browser-relevant `HttpOnly`, `Secure`, `SameSite`, and expiry metadata and
+contain authentication secrets. Protect them like credentials.
+
+Bearer integrations that need an explicit certificate policy can use the four-argument constructor:
+```csharp
+using CreatioClient client = new(appUrl, bearerToken, useUntrustedSsl: false, isNetCore: true);
+```
 
 Use `UploadImageAsync` for the Creatio Image API's single-request binary upload. The caller supplies the
 fully resolved Image API URL and owns the returned response:

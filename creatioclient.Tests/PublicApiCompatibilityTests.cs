@@ -154,7 +154,7 @@ public class PublicApiCompatibilityTests
 		typeof(CreatioClient).GetMethod(nameof(CreatioClient.ExportSessionCookies), Type.EmptyTypes).Should()
 			.NotBeNull(because: "browser integrations need cookie export without changing an established interface");
 		typeof(CreatioClient).GetMethod(nameof(CreatioClient.ImportSessionCookies),
-			new[] { typeof(IEnumerable<Cookie>) }).Should().NotBeNull(
+			new[] { typeof(IEnumerable<CreatioSessionCookie>) }).Should().NotBeNull(
 			because: "cached sessions must be reusable without changing an established interface");
 		typeof(CreatioClient).GetMethod(nameof(CreatioClient.UploadImageAsync),
 			new[] { typeof(string), typeof(byte[]), typeof(string), typeof(string), typeof(int),
@@ -178,6 +178,18 @@ public class PublicApiCompatibilityTests
 		AssertProperties<SignalRWrapper>("Arguments", "Target", "Type");
 		AssertProperties<TokenResponse>("AccessToken", "ExpiresIn", "TokenType");
 		AssertProperties<WsMessage>("Body", "Header", "Id");
+	}
+
+	[Test]
+	public void SessionTransferApi_ShouldExposeCurrentCookieShapeAndStrictTlsBearerConstructor()
+	{
+		typeof(CreatioClient).Assembly.GetExportedTypes().Should().Contain(typeof(CreatioSessionCookie),
+			because: "browser and service consumers need the detached public session contract");
+		typeof(CreatioClient).GetConstructors().Select(constructor => FormatParameters(constructor.GetParameters()))
+			.Should().Contain("System.String appUrl, System.String bearerToken, System.Boolean useUntrustedSsl, System.Boolean isNetCore",
+				because: "bearer consumers must be able to enforce strict certificate validation explicitly");
+		AssertProperties<CreatioSessionCookie>("Name", "Value", "Domain", "Path", "HttpOnly", "Secure",
+			"SameSite", "Expires");
 	}
 
 	[Test]
