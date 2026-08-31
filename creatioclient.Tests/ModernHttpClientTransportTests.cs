@@ -50,6 +50,22 @@ public class ModernHttpClientTransportTests
 	}
 
 	[Test]
+	public async Task BearerUnauthorized_ShouldReturnResponseWithoutAuthenticationReplay()
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			new ScriptedResponse(StatusCode: 401));
+		using CreatioClient client = new(server.BaseUri.ToString(), "token");
+
+		using HttpResponseMessage response = await client.ExecuteGetRequestAsync(server.BaseUri.ToString());
+		IReadOnlyList<CapturedRequest> requests = await capture;
+
+		response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+		requests.Should().ContainSingle();
+		requests[0].Headers["Authorization"].Should().Be("Bearer token");
+	}
+
+	[Test]
 	public async Task ExecuteGetRequestAsync_ShouldHonorCallerCancellationWithoutRetrying()
 	{
 		await using ScriptedLoopbackHttpServer server = new();
@@ -425,6 +441,211 @@ public class ModernHttpClientTransportTests
 	}
 
 	[Test]
+	public async Task ExpiredCookieSessionRedirect_ShouldReloginAndReplayPostRequest()
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			LoginResponse("session-one", "csrf-one"),
+			new ScriptedResponse(Body: "first"),
+			new ScriptedResponse(StatusCode: 302, Headers: new Dictionary<string, string[]> {
+				["Location"] = new[] { "/Login/Login.html?ReturnUrl=%2Fdata" }
+			}),
+			LoginResponse("session-two", "csrf-two"),
+			new ScriptedResponse(Body: "recovered"));
+		using CreatioClient client = new(server.BaseUri.ToString(), "user", "password") { SkipPing = true };
+
+		using (HttpResponseMessage first = await client.ExecuteGetRequestAsync(
+			new Uri(server.BaseUri, "first").ToString())) { }
+		using HttpResponseMessage recovered = await client.ExecutePostRequestAsync(
+			new Uri(server.BaseUri, "data").ToString(), "{\"value\":42}");
+		IReadOnlyList<CapturedRequest> requests = await capture;
+
+		recovered.StatusCode.Should().Be(HttpStatusCode.OK);
+		(await recovered.Content.ReadAsStringAsync()).Should().Be("recovered");
+		requests.Select(item => item.Target).Should().ContainInOrder(
+			"/ServiceModel/AuthService.svc/Login", "/first", "/data",
+			"/ServiceModel/AuthService.svc/Login", "/data");
+		requests.Last().Method.Should().Be("POST");
+		System.Text.Encoding.UTF8.GetString(requests.Last().Body).Should().Be("{\"value\":42}");
+		requests.Last().Headers["Cookie"].Should().Contain(".ASPXAUTH=session-two")
+			.And.NotContain(".ASPXAUTH=session-one");
+		requests.Last().Headers["BPMCSRF"].Should().Be("csrf-two");
+	}
+
+	[Test]
+	public async Task ExpiredCookieSessionUnauthorized_ShouldReloginOnce()
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			LoginResponse("session-one", "csrf-one"),
+			new ScriptedResponse(Body: "first"),
+			new ScriptedResponse(StatusCode: 401),
+			LoginResponse("session-two", "csrf-two"),
+			new ScriptedResponse(Body: "recovered"));
+		using CreatioClient client = new(server.BaseUri.ToString(), "user", "password") { SkipPing = true };
+
+		using (HttpResponseMessage first = await client.ExecuteGetRequestAsync(
+			new Uri(server.BaseUri, "first").ToString())) { }
+		using HttpResponseMessage recovered = await client.ExecuteGetRequestAsync(
+			new Uri(server.BaseUri, "data").ToString());
+		IReadOnlyList<CapturedRequest> requests = await capture;
+
+		recovered.StatusCode.Should().Be(HttpStatusCode.OK);
+		requests.Count(item => item.Target.EndsWith("/ServiceModel/AuthService.svc/Login"))
+			.Should().Be(2);
+		requests.Count(item => item.Target == "/data").Should().Be(2);
+	}
+
+	[Test]
+	public async Task FirstCookieRequestForbidden_ShouldReturnResponseWithoutReplay()
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			LoginResponse("session-one", "csrf-one"),
+			new ScriptedResponse(StatusCode: 403));
+		using CreatioClient client = new(server.BaseUri.ToString(), "user", "password") { SkipPing = true };
+
+		using HttpResponseMessage response = await client.ExecuteGetRequestAsync(
+			new Uri(server.BaseUri, "data").ToString());
+		IReadOnlyList<CapturedRequest> requests = await capture;
+
+		response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+		requests.Count(item => item.Target.EndsWith("/ServiceModel/AuthService.svc/Login"))
+			.Should().Be(1);
+		requests.Count(item => item.Target == "/data").Should().Be(1);
+	}
+
+	[Test]
+	public async Task ExpiredNtlmSessionUnauthorized_ShouldReloginAndReplayRequest()
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			LoginResponse("session-one", "csrf-one"),
+			new ScriptedResponse(Body: "first"),
+			new ScriptedResponse(StatusCode: 401),
+			LoginResponse("session-two", "csrf-two"),
+			new ScriptedResponse(Body: "recovered"));
+		using CreatioClient client = new(server.BaseUri.ToString(), true,
+			new NetworkCredential("windows-user", "windows-password")) { SkipPing = true };
+
+		using (HttpResponseMessage first = await client.ExecuteGetRequestAsync(
+			new Uri(server.BaseUri, "first").ToString())) { }
+		using HttpResponseMessage recovered = await client.ExecuteGetRequestAsync(
+			new Uri(server.BaseUri, "data").ToString());
+		IReadOnlyList<CapturedRequest> requests = await capture;
+
+		recovered.StatusCode.Should().Be(HttpStatusCode.OK);
+		requests.Count(item => item.Target == "/Login/NuiLogin.aspx?ntlmlogin").Should().Be(2);
+		requests.Count(item => item.Target == "/data").Should().Be(2);
+	}
+
+	[Test]
+	public async Task ConcurrentExpiredSessionRecoveries_ShouldShareOneLogin()
+	{
+		Uri appUri = new("https://creatio.test/");
+		CookieContainer cookies = new();
+		cookies.Add(appUri, new Cookie(".ASPXAUTH", "session-one"));
+		cookies.Add(appUri, new Cookie("BPMCSRF", "csrf-one"));
+		CoordinatedLoginHandler inner = new(appUri, cookies);
+		using CreatioAuthenticationHandler authentication = new(appUri, cookies, "user", "password", null,
+			() => null, () => 0, () => true, true, inner);
+
+		Task first = authentication.RecoverExpiredSessionAsync(0, CancellationToken.None);
+		await inner.LoginStarted;
+		Task second = authentication.RecoverExpiredSessionAsync(0, CancellationToken.None);
+		inner.ReleaseLogin();
+		await Task.WhenAll(first, second);
+
+		inner.LoginCount.Should().Be(1);
+	}
+
+	[Test]
+	public async Task ConcurrentSessionRefreshWithForbiddenResponse_ShouldRequestReplayWithoutSecondLogin()
+	{
+		Uri appUri = new("https://creatio.test/");
+		CookieContainer cookies = new();
+		cookies.Add(appUri, new Cookie(".ASPXAUTH", "session-one"));
+		cookies.Add(appUri, new Cookie("BPMCSRF", "csrf-one"));
+		ConcurrentSessionRefreshHandler inner = new(appUri, cookies);
+		using CreatioAuthenticationHandler authentication = new(appUri, cookies, "user", "password", null,
+			() => null, () => 0, () => true, true, inner);
+		using HttpMessageInvoker invoker = new(authentication);
+
+		Task<HttpResponseMessage> send = invoker.SendAsync(
+			new HttpRequestMessage(HttpMethod.Get, new Uri(appUri, "data")), CancellationToken.None);
+		await inner.RequestReceived;
+		await authentication.RecoverExpiredSessionAsync(0, CancellationToken.None);
+		inner.ReleaseResponse();
+
+		CreatioSessionExpiredException exception = (await FluentActions.Awaiting(() => send)
+			.Should().ThrowAsync<CreatioSessionExpiredException>()).Which;
+		exception.AuthenticationGeneration.Should().Be(0);
+		exception.Response.Dispose();
+		inner.LoginCount.Should().Be(1);
+	}
+
+	[Test]
+	public async Task ExpiredCookieSessionAfterRelogin_ShouldReturnSecondUnauthorizedResponse()
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			LoginResponse("session-one", "csrf-one"),
+			new ScriptedResponse(Body: "first"),
+			new ScriptedResponse(StatusCode: 401),
+			LoginResponse("session-two", "csrf-two"),
+			new ScriptedResponse(StatusCode: 401));
+		using CreatioClient client = new(server.BaseUri.ToString(), "user", "password") { SkipPing = true };
+
+		using (HttpResponseMessage first = await client.ExecuteGetRequestAsync(
+			new Uri(server.BaseUri, "first").ToString())) { }
+		using HttpResponseMessage response = await client.ExecuteGetRequestAsync(
+			new Uri(server.BaseUri, "data").ToString());
+		IReadOnlyList<CapturedRequest> requests = await capture;
+
+		response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+		requests.Count(item => item.Target.EndsWith("/ServiceModel/AuthService.svc/Login"))
+			.Should().Be(2);
+		requests.Count(item => item.Target == "/data").Should().Be(2);
+	}
+
+	[Test]
+	public async Task RecoverExpiredSessionAfterAnotherLogin_ShouldNotAuthenticateAgain()
+	{
+		Uri appUri = new("https://creatio.test/");
+		SequenceHandler inner = new(_ => Response(HttpStatusCode.OK, "ok"));
+		using CreatioAuthenticationHandler authentication = new(appUri, new CookieContainer(), "user",
+			"password", null, () => null, () => 0, () => true, true, inner);
+
+		await authentication.RecoverExpiredSessionAsync(-1, CancellationToken.None);
+
+		inner.Requests.Should().BeEmpty();
+	}
+
+	[Test]
+	public async Task ExpiredCookieSessionRelativeRedirectWithoutRequestMessage_ShouldUseAppOrigin()
+	{
+		Uri appUri = new("https://creatio.test/");
+		CookieContainer cookies = new();
+		cookies.Add(appUri, new Cookie(".ASPXAUTH", "session-one"));
+		cookies.Add(appUri, new Cookie("BPMCSRF", "csrf-one"));
+		SequenceHandler inner = new(_ => new HttpResponseMessage(HttpStatusCode.Redirect) {
+			Headers = { Location = new Uri("/Login/Login.html", UriKind.Relative) }
+		});
+		using CreatioAuthenticationHandler authentication = new(appUri, cookies, "user",
+			"password", null, () => null, () => 0, () => true, true, inner);
+		using HttpMessageInvoker invoker = new(authentication);
+
+		Func<Task> act = async () => {
+			using HttpResponseMessage response = await invoker.SendAsync(
+				new HttpRequestMessage(HttpMethod.Get, new Uri(appUri, "data")), CancellationToken.None);
+		};
+
+		CreatioSessionExpiredException exception = (await act.Should()
+			.ThrowAsync<CreatioSessionExpiredException>()).Which;
+		exception.Response.Dispose();
+	}
+
+	[Test]
 	public async Task SameHostHttpToHttpsRedirect_ShouldRemainTrusted()
 	{
 		Uri appUri = new("http://creatio.test/");
@@ -643,6 +864,76 @@ public class ModernHttpClientTransportTests
 		}
 	}
 
+	private sealed class ConcurrentSessionRefreshHandler : HttpMessageHandler
+	{
+		private readonly Uri _appUri;
+		private readonly CookieContainer _cookies;
+		private readonly TaskCompletionSource<bool> _requestReceived =
+			new(TaskCreationOptions.RunContinuationsAsynchronously);
+		private readonly TaskCompletionSource<bool> _release =
+			new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+		public ConcurrentSessionRefreshHandler(Uri appUri, CookieContainer cookies)
+		{
+			_appUri = appUri;
+			_cookies = cookies;
+		}
+
+		public Task RequestReceived => _requestReceived.Task;
+
+		public int LoginCount { get; private set; }
+
+		public void ReleaseResponse() => _release.TrySetResult(true);
+
+		protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+			CancellationToken cancellationToken)
+		{
+			if (request.RequestUri.AbsolutePath.EndsWith("/ServiceModel/AuthService.svc/Login",
+				StringComparison.Ordinal)) {
+				LoginCount++;
+				_cookies.Add(_appUri, new Cookie(".ASPXAUTH", "session-two"));
+				_cookies.Add(_appUri, new Cookie("BPMCSRF", "csrf-two"));
+				return Response(HttpStatusCode.OK, "{\"Code\":0}");
+			}
+			_requestReceived.TrySetResult(true);
+			await _release.Task.WaitAsync(cancellationToken);
+			return Response(HttpStatusCode.Forbidden, "forbidden");
+		}
+	}
+
+	private sealed class CoordinatedLoginHandler : HttpMessageHandler
+	{
+		private readonly Uri _appUri;
+		private readonly CookieContainer _cookies;
+		private readonly TaskCompletionSource<bool> _loginStarted =
+			new(TaskCreationOptions.RunContinuationsAsynchronously);
+		private readonly TaskCompletionSource<bool> _releaseLogin =
+			new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+		public CoordinatedLoginHandler(Uri appUri, CookieContainer cookies)
+		{
+			_appUri = appUri;
+			_cookies = cookies;
+		}
+
+		public Task LoginStarted => _loginStarted.Task;
+
+		public int LoginCount { get; private set; }
+
+		public void ReleaseLogin() => _releaseLogin.TrySetResult(true);
+
+		protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+			CancellationToken cancellationToken)
+		{
+			LoginCount++;
+			_loginStarted.TrySetResult(true);
+			await _releaseLogin.Task.WaitAsync(cancellationToken);
+			_cookies.Add(_appUri, new Cookie(".ASPXAUTH", "session-two"));
+			_cookies.Add(_appUri, new Cookie("BPMCSRF", "csrf-two"));
+			return Response(HttpStatusCode.OK, "{\"Code\":0}");
+		}
+	}
+
 	private sealed class ThrowingContent : HttpContent
 	{
 		public bool IsDisposed { get; private set; }
@@ -663,12 +954,13 @@ public class ModernHttpClientTransportTests
 		}
 	}
 
-	private static ScriptedResponse LoginResponse() => new(
+	private static ScriptedResponse LoginResponse(string sessionToken = "session-token",
+		string csrfToken = "csrf-token") => new(
 		Body: "{\"Code\":0}",
 		Headers: new Dictionary<string, string[]> {
 			["Set-Cookie"] = new[] {
-				".ASPXAUTH=session-token; Path=/",
-				"BPMCSRF=csrf-token; Path=/"
+				$".ASPXAUTH={sessionToken}; Path=/",
+				$"BPMCSRF={csrfToken}; Path=/"
 			}
 		});
 }

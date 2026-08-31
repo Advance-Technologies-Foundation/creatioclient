@@ -183,6 +183,34 @@ public class LegacyHttpBehaviorCharacterizationTests
 	}
 
 	[Test]
+	public async Task DownloadFileByGet_ShouldRecoverExpiredSessionOnlyOnceAcrossRetries()
+	{
+		string path = Path.GetTempFileName();
+		try {
+			await using ScriptedLoopbackHttpServer server = new();
+			Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+				LoginResponse("session-one", "csrf-one"),
+				new ScriptedResponse(StatusCode: 401),
+				LoginResponse("session-two", "csrf-two"),
+				new ScriptedResponse(StatusCode: 401),
+				new ScriptedResponse(StatusCode: 401));
+			using CreatioClient client = new(server.BaseUri.ToString(), "user", "password") { SkipPing = true };
+			client.SetRetryPolicy(2, 0, RetryPolicy.Simple);
+
+			Action act = () => client.DownloadFileByGet(server.BaseUri.ToString(), path);
+
+			act.Should().Throw<WebException>();
+			IReadOnlyList<CapturedRequest> requests = await capture;
+			requests.Count(item => item.Target.EndsWith("/ServiceModel/AuthService.svc/Login"))
+				.Should().Be(2);
+			requests.Count(item => item.Target == "/").Should().Be(3);
+		}
+		finally {
+			File.Delete(path);
+		}
+	}
+
+	[Test]
 	public async Task DownloadFileByGet_ShouldApplyTimeoutWhileReadingErrorBody()
 	{
 		string path = Path.GetTempFileName();
@@ -401,12 +429,13 @@ public class LegacyHttpBehaviorCharacterizationTests
 		}
 	}
 
-	private static ScriptedResponse LoginResponse() => new(
+	private static ScriptedResponse LoginResponse(string sessionToken = "session-token",
+		string csrfToken = "csrf-token") => new(
 		Body: "{\"Code\":0}",
 		Headers: new Dictionary<string, string[]> {
 			["Set-Cookie"] = new[] {
-				".ASPXAUTH=session-token; Path=/",
-				"BPMCSRF=csrf-token; Path=/"
+				$".ASPXAUTH={sessionToken}; Path=/",
+				$"BPMCSRF={csrfToken}; Path=/"
 			}
 		});
 }

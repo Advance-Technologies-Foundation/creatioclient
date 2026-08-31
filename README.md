@@ -81,6 +81,8 @@ string content = await response.Content.ReadAsStringAsync();
 The caller owns every `HttpResponseMessage` returned by an async operation and must dispose it.
 `CreatioClient` owns its shared `HttpClient` and should also be disposed when it is no longer needed.
 The existing synchronous methods remain available and retain their string, file, and exception behavior.
+Cookie-authenticated requests automatically renew an expired Creatio session once and replay the request;
+if the replay is still unauthorized, its response is returned without another login attempt.
 For synchronous protocol errors, `WebException.Response` remains castable to `HttpWebResponse` and
 preserves the status, description, headers, request URI, method, and buffered error body used by known
 consumers. It is a bounded compatibility view; use the async API when other response metadata is required.
