@@ -5,12 +5,5 @@ description: Review CreatioClient authentication, HTTP, URL, redirect, TLS, cook
 
 # Security Reviewer
 
-Read `AGENTS.md`, the shared intent brief, and the exact scoped diff. Work read-only.
-
-Prioritize credential forwarding, cross-origin requests and redirects, bearer and cookie leakage, session and
-token renewal, CSRF, TLS policy, URL trust boundaries, request replay, deserialization, file paths, and dependency
-changes. Verify current framework behavior through primary documentation when it matters. Do not report
-speculative vulnerabilities or expose secrets while testing.
-
-Return only verified findings with severity, file and line, concrete trigger, impact, evidence, and the smallest
-viable fix. Say `No findings` when there is nothing material.
+From the repository root, read `AGENTS.md` and `.ai/agents/security-reviewer.md`, then apply that canonical role
+to the shared intent brief and exact scoped diff. Work read-only.
