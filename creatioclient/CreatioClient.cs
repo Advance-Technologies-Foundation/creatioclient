@@ -36,11 +36,14 @@ namespace Creatio.Client
 		private readonly bool _isNetCore;
 		private readonly bool _useUntrustedSsl = true;
 		private readonly CookieContainer _authCookie = new CookieContainer();
-		private string _oauthToken;
+		private volatile string _oauthToken;
 		private int _maxAttempts = 1;
 		private int _delaySec = 1;
 		private RetryPolicy _retryPolicy = RetryPolicy.Simple;
 		private readonly ICredentials _credentials;
+		private readonly string _oauthAuthApp;
+		private readonly string _oauthClientId;
+		private readonly string _oauthClientSecret;
 		private string _appUrl;
 		private readonly object _httpClientLock = new object();
 		private volatile HttpClient _httpClient;
@@ -91,7 +94,10 @@ namespace Creatio.Client
 						}
 						_authenticationHandler = new CreatioAuthenticationHandler(
 							new Uri(AppUrl), _authCookie, _userName, _userPassword, _credentials,
-							() => _oauthToken, () => TimeZoneOffset, () => SkipPing, _isNetCore, primaryHandler);
+							() => _oauthToken, () => TimeZoneOffset, () => SkipPing, _isNetCore, primaryHandler,
+							_oauthAuthApp == null
+								? null
+								: new Func<CancellationToken, Task>(RefreshOAuthTokenAsync));
 						_httpClient = new HttpClient(_authenticationHandler) { Timeout = Timeout.InfiniteTimeSpan };
 					}
 					return _httpClient;
@@ -134,19 +140,31 @@ namespace Creatio.Client
 		}
 
 		private static async Task<string> GetAccessTokenByClientCredentials(string authApp, string clientId,
-			string clientSecret){
+			string clientSecret, CancellationToken cancellationToken = default(CancellationToken)){
 			using (HttpClient client = new HttpClient()) {
 				Dictionary<string, string> body = new Dictionary<string, string> {
 					{"client_id", clientId},
 					{"client_secret", clientSecret},
 					{"grant_type", "client_credentials"}
 				};
-				HttpContent httpContent = new FormUrlEncodedContent(body);
-				HttpResponseMessage response = await client.PostAsync(authApp, httpContent).ConfigureAwait(false);
-				string content = await response.Content.ReadAsStringAsync();
-				TokenResponse token = JsonConvert.DeserializeObject<TokenResponse>(content);
-				return token.AccessToken;
+				using (HttpContent httpContent = new FormUrlEncodedContent(body))
+				using (HttpResponseMessage response = await client.PostAsync(authApp, httpContent, cancellationToken)
+					.ConfigureAwait(false)) {
+					response.EnsureSuccessStatusCode();
+					string content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+					TokenResponse token = JsonConvert.DeserializeObject<TokenResponse>(content);
+					if (string.IsNullOrWhiteSpace(token?.AccessToken)) {
+						throw new InvalidOperationException("The OAuth token response did not contain an access token.");
+					}
+					return token.AccessToken;
+				}
 			}
+		}
+
+		private async Task RefreshOAuthTokenAsync(CancellationToken cancellationToken)
+		{
+			_oauthToken = await GetAccessTokenByClientCredentials(_oauthAuthApp, _oauthClientId,
+				_oauthClientSecret, cancellationToken).ConfigureAwait(false);
 		}
 
 		private static void ValidateUploadInfo(FileUploadInfo uploadInfo) {
@@ -244,6 +262,15 @@ namespace Creatio.Client
 						using (exception.Response) {
 							sessionRecovery.Attempted = true;
 							await _authenticationHandler.RecoverExpiredSessionAsync(
+								exception.AuthenticationGeneration, timeout.Token).ConfigureAwait(false);
+						}
+					} catch (CreatioBearerTokenExpiredException exception) {
+						if (sessionRecovery.Attempted || cancellationToken.IsCancellationRequested) {
+							return exception.Response;
+						}
+						using (exception.Response) {
+							sessionRecovery.Attempted = true;
+							await _authenticationHandler.RecoverExpiredBearerTokenAsync(
 								exception.AuthenticationGeneration, timeout.Token).ConfigureAwait(false);
 						}
 					} catch when (attempt < maxAttempts && !cancellationToken.IsCancellationRequested) {
@@ -609,6 +636,25 @@ namespace Creatio.Client
 			_oauthToken = StripBearerPrefix(bearerToken);
 		}
 
+		/// <summary>
+		/// Initializes an OAuth 2.0 client-credentials client. The access token is refreshed once and the
+		/// original request is replayed when Creatio returns HTTP 401.
+		/// </summary>
+		/// <param name="appUrl">The URL of the Creatio application.</param>
+		/// <param name="authApp">The OAuth token endpoint.</param>
+		/// <param name="clientId">The OAuth client identifier.</param>
+		/// <param name="clientSecret">The OAuth client secret.</param>
+		/// <param name="isNetCore">Whether the target Creatio application uses the .NET Core route shape.</param>
+		public CreatioClient(string appUrl, string authApp, string clientId, string clientSecret,
+			bool isNetCore = false) : this(appUrl, isNetCore)
+		{
+			_oauthAuthApp = authApp;
+			_oauthClientId = clientId;
+			_oauthClientSecret = clientSecret;
+			_oauthToken = GetAccessTokenByClientCredentials(authApp, clientId, clientSecret)
+				.GetAwaiter().GetResult();
+		}
+
 		private static string StripBearerPrefix(string token){
 			if (string.IsNullOrWhiteSpace(token)) {
 				return token;
@@ -662,12 +708,7 @@ namespace Creatio.Client
 
 		public static CreatioClient CreateOAuth20Client(string app, string authApp, string clientId,
 			string clientSecret,
-			bool isNetCore = false){
-			CreatioClient client = new CreatioClient(app, isNetCore) {
-				_oauthToken = GetAccessTokenByClientCredentials(authApp, clientId, clientSecret).Result
-			};
-			return client;
-		}
+			bool isNetCore = false) => new CreatioClient(app, authApp, clientId, clientSecret, isNetCore);
 
 		public string CallConfigurationService(string serviceName,
 			string serviceMethod,

@@ -78,12 +78,13 @@ creatioclient/                         # solution root
 
 ### Authentication Flow
 
-There are three mutually exclusive auth paths, all lazy-initialised on the first real request:
+There are three mutually exclusive auth paths. The HTTP pipeline is lazy-initialised on the first real
+request; OAuth client-credentials construction obtains its initial access token immediately:
 
 | Mode | Constructor | Mechanism |
 |------|-------------|-----------|
 | Cookie/session | `new CreatioClient(url, user, pass)` | POST to `/ServiceModel/AuthService.svc/Login`, stores `.ASPXAUTH` + `BPMCSRF` cookies |
-| OAuth 2.0 | `CreatioClient.CreateOAuth20Client(...)` | client-credentials grant to identity server; stores bearer token in `_oauthToken` |
+| OAuth 2.0 | `new CreatioClient(url, authUrl, clientId, clientSecret)` | client-credentials grant to identity server; refreshes and replays once after a 401 |
 | NTLM | `new CreatioClient(url, ssl, ICredentials)` | GET to `/Login/NuiLogin.aspx?ntlmlogin` with `NetworkCredential` |
 
 CSRF protection: every modifying request includes the `BPMCSRF` cookie value in the
@@ -96,7 +97,9 @@ Each `CreatioClient` instance owns one lazily initialized, pooled `HttpClient`. 
 `CreatioClient` → `CreatioAuthenticationHandler` → `HttpClientHandler`
 
 - Password authentication logs in once, shares the cookie container, and adds `BPMCSRF`.
-- OAuth adds the bearer token in the delegating handler.
+- OAuth adds the bearer token in the delegating handler. Client-credentials clients refresh it under the
+  shared authentication lock and replay once after a 401; pre-issued bearer-token clients remain
+  caller-managed.
 - NTLM/Windows credentials are scoped to the configured Creatio origin through `CredentialCache`
   and handled by the primary `HttpClientHandler`.
 - Authenticated requests and followed redirects are restricted to the configured origin or a

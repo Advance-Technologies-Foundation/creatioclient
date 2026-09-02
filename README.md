@@ -27,9 +27,13 @@ You can initialize CreatioClient in three(3) different ways
 
 - Use [OAuth 2.0](https://academy.creatio.com/docs/8.x/dev/development-on-creatio-platform/integrations-and-api/authentication/oauth-2-0-authorization/identity-service-overview)
     ```csharp
-   var client = new CreatioClient(<AppUrl>, <ClientId>, <ClientSecret>, <UserName>, <UserPassword>);
+	var client = new CreatioClient(<AppUrl>, <AuthApp>, <ClientId>, <ClientSecret>);
     ```
-    `TimeZoneOffset` is a password-login field and is not sent during OAuth client-credentials authentication.
+	`CreateOAuth20Client(<AppUrl>, <AuthApp>, <ClientId>, <ClientSecret>)` remains available for
+	backwards compatibility. Client-credentials clients refresh an expired access token and replay the
+	request once when Creatio returns HTTP 401. Clients constructed with a pre-issued bearer token do not
+	refresh it because they do not own the client credentials.
+	`TimeZoneOffset` is a password-login field and is not sent during OAuth client-credentials authentication.
 
 - Use [NTLM user authentication](https://learn.microsoft.com/en-us/troubleshoot/windows-server/windows-security/ntlm-user-authentication)
     ```csharp
@@ -81,11 +85,12 @@ string content = await response.Content.ReadAsStringAsync();
 The caller owns every `HttpResponseMessage` returned by an async operation and must dispose it.
 `CreatioClient` owns its shared `HttpClient` and should also be disposed when it is no longer needed.
 The existing synchronous methods remain available and retain their string, file, and exception behavior.
-Cookie-authenticated requests automatically renew an expired Creatio session once and replay the request;
+Cookie-authenticated requests and OAuth client-credentials requests automatically renew expired
+authentication once and replay the request;
 if the replay is still unauthorized, its response is returned without another login attempt.
 Cookie authentication also echoes the CSRF token under the name issued by Creatio: current
 `CRT_CSRF` is preferred, legacy `BPMCSRF` remains supported, and no header is invented when the
-environment issues neither cookie. OAuth requests remain bearer-only.
+environment issues neither cookie. OAuth requests remain bearer-only and never add CSRF headers.
 
 Browser and service integrations can reuse the same session without implementing another login client:
 ```csharp
