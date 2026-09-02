@@ -19,7 +19,7 @@ transport invariants. Findings are the deliverable; do not modify the candidate 
    - architecture: review the proposal plus the smallest relevant source context.
 4. Record the base/head SHAs, commits, diff stat, and changed files. Include uncommitted and staged changes only
    when the user puts them in scope.
-5. Read [references/reviewer-roles.md](references/reviewer-roles.md).
+5. From the repository root, read `.ai/skills/agentic-code-review/references/reviewer-roles.md`.
 6. Run independent reviewers in parallel when subagents are available and authorized. Always cover code
    quality, security, performance, testing, bugs, intent, and KISS. Keep intent and KISS as separate reviewers.
 7. Give every reviewer the same intent brief, repository rules, exact scope, changed files, and relevant diff.

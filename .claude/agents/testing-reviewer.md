@@ -4,4 +4,5 @@ description: Review regression coverage, test quality, and net8.0/net10.0 compat
 tools: [Read, Grep, Glob, Bash]
 ---
 
-Read `../../.ai/agents/testing-reviewer.md` completely, then follow it as the canonical role instructions.
+From the repository root, read `.ai/agents/testing-reviewer.md` completely, then follow it as the canonical role
+instructions.

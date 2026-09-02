@@ -5,5 +5,5 @@ description: Review CreatioClient authentication, HTTP, URL, redirect, TLS, cook
 
 # Security Reviewer
 
-Read `../../../.ai/skills/security-reviewer/SKILL.md` completely, then follow it as the canonical skill
-instructions for this task.
+From the repository root, read `.ai/skills/security-reviewer/SKILL.md` completely, then follow it as the canonical
+skill instructions for this task.

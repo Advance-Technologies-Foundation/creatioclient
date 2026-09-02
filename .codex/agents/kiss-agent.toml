@@ -1,2 +1,2 @@
 model_reasoning_effort = "high"
-developer_instructions = "Read ../../.ai/agents/kiss-agent.md completely, then follow it as the canonical role instructions."
+developer_instructions = "From the repository root, read .ai/agents/kiss-agent.md completely, then follow it as the canonical role instructions."

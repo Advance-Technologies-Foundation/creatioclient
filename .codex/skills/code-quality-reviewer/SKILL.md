@@ -5,5 +5,5 @@ description: Review CreatioClient changes for maintainability, API compatibility
 
 # Code Quality Reviewer
 
-Read `../../../.ai/skills/code-quality-reviewer/SKILL.md` completely, then follow it as the canonical skill
-instructions for this task.
+From the repository root, read `.ai/skills/code-quality-reviewer/SKILL.md` completely, then follow it as the canonical
+skill instructions for this task.

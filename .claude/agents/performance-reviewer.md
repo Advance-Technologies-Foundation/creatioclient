@@ -4,4 +4,5 @@ description: Review async I/O, pooling, allocation, concurrency, cancellation, a
 tools: [Read, Grep, Glob, Bash]
 ---
 
-Read `../../.ai/agents/performance-reviewer.md` completely, then follow it as the canonical role instructions.
+From the repository root, read `.ai/agents/performance-reviewer.md` completely, then follow it as the canonical role
+instructions.

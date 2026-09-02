@@ -4,4 +4,5 @@ description: Find correctness, edge-case, and compatibility defects in CreatioCl
 tools: [Read, Grep, Glob, Bash]
 ---
 
-Read `../../.ai/agents/bug-reviewer.md` completely, then follow it as the canonical role instructions.
+From the repository root, read `.ai/agents/bug-reviewer.md` completely, then follow it as the canonical role
+instructions.

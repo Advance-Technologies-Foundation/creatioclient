@@ -5,4 +5,5 @@ description: Coordinate an Advance-Technologies-Foundation/creatioclient GitHub 
 
 # CreatioClient Issue Workflow
 
-Read `../../../.ai/skills/creatioclient-issue-workflow/SKILL.md` completely, then follow it as the canonical skill instructions for this task.
+From the repository root, read `.ai/skills/creatioclient-issue-workflow/SKILL.md` completely, then follow it as the canonical
+skill instructions for this task.

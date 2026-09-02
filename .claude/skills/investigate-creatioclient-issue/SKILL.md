@@ -5,4 +5,5 @@ description: Investigate a claimed CreatioClient GitHub issue, reproduce or trac
 
 # Investigate CreatioClient Issue
 
-Read `../../../.ai/skills/investigate-creatioclient-issue/SKILL.md` completely, then follow it as the canonical skill instructions for this task.
+From the repository root, read `.ai/skills/investigate-creatioclient-issue/SKILL.md` completely, then follow it as the canonical
+skill instructions for this task.

@@ -5,5 +5,5 @@ description: Run a comprehensive multi-perspective review of CreatioClient branc
 
 # Agentic Code Review
 
-Read `../../../.ai/skills/agentic-code-review/SKILL.md` completely, then follow it as the canonical skill
-instructions for this task.
+From the repository root, read `.ai/skills/agentic-code-review/SKILL.md` completely, then follow it as the canonical
+skill instructions for this task.

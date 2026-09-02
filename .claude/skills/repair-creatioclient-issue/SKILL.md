@@ -5,4 +5,5 @@ description: Implement, validate, review, and deliver the smallest evidence-back
 
 # Repair CreatioClient Issue
 
-Read `../../../.ai/skills/repair-creatioclient-issue/SKILL.md` completely, then follow it as the canonical skill instructions for this task.
+From the repository root, read `.ai/skills/repair-creatioclient-issue/SKILL.md` completely, then follow it as the canonical
+skill instructions for this task.

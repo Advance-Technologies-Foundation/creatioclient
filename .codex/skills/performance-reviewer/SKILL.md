@@ -5,5 +5,5 @@ description: Review CreatioClient changes for material async I/O, pooling, concu
 
 # Performance Reviewer
 
-Read `../../../.ai/skills/performance-reviewer/SKILL.md` completely, then follow it as the canonical skill
-instructions for this task.
+From the repository root, read `.ai/skills/performance-reviewer/SKILL.md` completely, then follow it as the canonical
+skill instructions for this task.

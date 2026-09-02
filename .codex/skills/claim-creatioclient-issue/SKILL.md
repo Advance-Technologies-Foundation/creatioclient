@@ -5,4 +5,5 @@ description: Claim an open Advance-Technologies-Foundation/creatioclient issue b
 
 # Claim CreatioClient Issue
 
-Read `../../../.ai/skills/claim-creatioclient-issue/SKILL.md` completely, then follow it as the canonical skill instructions for this task.
+From the repository root, read `.ai/skills/claim-creatioclient-issue/SKILL.md` completely, then follow it as the canonical
+skill instructions for this task.

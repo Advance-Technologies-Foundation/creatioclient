@@ -4,4 +4,5 @@ description: Review maintainability, public API design, and consistency with rep
 tools: [Read, Grep, Glob, Bash]
 ---
 
-Read `../../.ai/agents/code-quality-reviewer.md` completely, then follow it as the canonical role instructions.
+From the repository root, read `.ai/agents/code-quality-reviewer.md` completely, then follow it as the canonical role
+instructions.

@@ -4,4 +4,5 @@ description: Find unnecessary abstractions, state, compatibility layers, and rec
 tools: [Read, Grep, Glob, Bash]
 ---
 
-Read `../../.ai/agents/kiss-agent.md` completely, then follow it as the canonical role instructions.
+From the repository root, read `.ai/agents/kiss-agent.md` completely, then follow it as the canonical role
+instructions.
