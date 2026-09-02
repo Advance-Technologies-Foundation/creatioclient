@@ -125,6 +125,30 @@ public class ModernHttpClientTransportTests
 		requests.Count(request => request.Target == "/data").Should().Be(2);
 	}
 
+	[TestCase(false)]
+	[TestCase(true)]
+	public async Task OAuthTokenFailure_ShouldPreserveConstructionFailureShape(bool useFactory)
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			new ScriptedResponse(StatusCode: 500));
+		string authApp = new Uri(server.BaseUri, "connect/token").ToString();
+
+		Action act = () => {
+			using CreatioClient client = useFactory
+				? CreatioClient.CreateOAuth20Client(server.BaseUri.ToString(), authApp, "client", "secret")
+				: new CreatioClient(server.BaseUri.ToString(), authApp, "client", "secret");
+		};
+
+		if (useFactory) {
+			act.Should().Throw<AggregateException>()
+				.Which.InnerException.Should().BeOfType<HttpRequestException>();
+		} else {
+			act.Should().Throw<HttpRequestException>().Which.Should().NotBeOfType<AggregateException>();
+		}
+		(await capture).Should().ContainSingle();
+	}
+
 	[Test]
 	public async Task ExecuteGetRequestAsync_ShouldHonorCallerCancellationWithoutRetrying()
 	{

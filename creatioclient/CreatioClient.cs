@@ -296,10 +296,9 @@ namespace Creatio.Client
 			if (sessionRecovery.Attempted || cancellationToken.IsCancellationRequested) {
 				return response;
 			}
-			using (response) {
-				sessionRecovery.Attempted = true;
-				await recover(authenticationGeneration, timeoutToken).ConfigureAwait(false);
-			}
+			sessionRecovery.Attempted = true;
+			response.Dispose();
+			await recover(authenticationGeneration, timeoutToken).ConfigureAwait(false);
 			return null;
 		}
 
@@ -663,13 +662,21 @@ namespace Creatio.Client
 		/// <param name="clientSecret">The OAuth client secret.</param>
 		/// <param name="isNetCore">Whether the target Creatio application uses the .NET Core route shape.</param>
 		public CreatioClient(string appUrl, string authApp, string clientId, string clientSecret,
-			bool isNetCore = false) : this(appUrl, isNetCore)
+			bool isNetCore = false) : this(appUrl, authApp, clientId, clientSecret, isNetCore,
+			preserveFactoryExceptionWrapping: false)
+		{
+		}
+
+		private CreatioClient(string appUrl, string authApp, string clientId, string clientSecret,
+			bool isNetCore, bool preserveFactoryExceptionWrapping) : this(appUrl, isNetCore)
 		{
 			_oauthAuthApp = authApp;
 			_oauthClientId = clientId;
 			_oauthClientSecret = clientSecret;
-			_oauthToken = GetAccessTokenByClientCredentials(authApp, clientId, clientSecret)
-				.GetAwaiter().GetResult();
+			Task<string> accessToken = GetAccessTokenByClientCredentials(authApp, clientId, clientSecret);
+			_oauthToken = preserveFactoryExceptionWrapping
+				? accessToken.Result
+				: accessToken.GetAwaiter().GetResult();
 		}
 
 		private static string StripBearerPrefix(string token){
@@ -725,7 +732,8 @@ namespace Creatio.Client
 
 		public static CreatioClient CreateOAuth20Client(string app, string authApp, string clientId,
 			string clientSecret,
-			bool isNetCore = false) => new CreatioClient(app, authApp, clientId, clientSecret, isNetCore);
+			bool isNetCore = false) => new CreatioClient(app, authApp, clientId, clientSecret, isNetCore,
+				preserveFactoryExceptionWrapping: true);
 
 		public string CallConfigurationService(string serviceName,
 			string serviceMethod,
