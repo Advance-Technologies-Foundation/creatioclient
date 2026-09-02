@@ -253,21 +253,10 @@ namespace Creatio.Client
 				using (HttpRequestMessage request = requestFactory())
 				using (CancellationTokenSource timeout = CreateTimeout(requestTimeout, cancellationToken)) {
 					try {
-						return await HttpClient.SendAsync(request, completionOption, timeout.Token)
-							.ConfigureAwait(false);
-					} catch (CreatioSessionExpiredException exception) {
-						HttpResponseMessage expiredResponse = await RecoverAuthenticationAsync(exception.Response,
-							exception.AuthenticationGeneration, sessionRecovery, cancellationToken, timeout.Token,
-							_authenticationHandler.RecoverExpiredSessionAsync).ConfigureAwait(false);
-						if (expiredResponse != null) {
-							return expiredResponse;
-						}
-					} catch (CreatioBearerTokenExpiredException exception) {
-						HttpResponseMessage expiredResponse = await RecoverAuthenticationAsync(exception.Response,
-							exception.AuthenticationGeneration, sessionRecovery, cancellationToken, timeout.Token,
-							_authenticationHandler.RecoverExpiredBearerTokenAsync).ConfigureAwait(false);
-						if (expiredResponse != null) {
-							return expiredResponse;
+						HttpResponseMessage response = await SendWithAuthenticationRecoveryAsync(request,
+							completionOption, sessionRecovery, cancellationToken, timeout.Token).ConfigureAwait(false);
+						if (response != null) {
+							return response;
 						}
 					} catch when (attempt < maxAttempts && !cancellationToken.IsCancellationRequested) {
 						attempt++;
@@ -280,6 +269,23 @@ namespace Creatio.Client
 				}
 			}
 			throw new InvalidOperationException("The HTTP retry loop completed without a response.");
+		}
+
+		private async Task<HttpResponseMessage> SendWithAuthenticationRecoveryAsync(HttpRequestMessage request,
+			HttpCompletionOption completionOption, SessionRecoveryState sessionRecovery,
+			CancellationToken cancellationToken, CancellationToken timeoutToken)
+		{
+			try {
+				return await HttpClient.SendAsync(request, completionOption, timeoutToken).ConfigureAwait(false);
+			} catch (CreatioSessionExpiredException exception) {
+				return await RecoverAuthenticationAsync(exception.Response, exception.AuthenticationGeneration,
+					sessionRecovery, cancellationToken, timeoutToken,
+					_authenticationHandler.RecoverExpiredSessionAsync).ConfigureAwait(false);
+			} catch (CreatioBearerTokenExpiredException exception) {
+				return await RecoverAuthenticationAsync(exception.Response, exception.AuthenticationGeneration,
+					sessionRecovery, cancellationToken, timeoutToken,
+					_authenticationHandler.RecoverExpiredBearerTokenAsync).ConfigureAwait(false);
+			}
 		}
 
 		private static async Task<HttpResponseMessage> RecoverAuthenticationAsync(HttpResponseMessage response,
