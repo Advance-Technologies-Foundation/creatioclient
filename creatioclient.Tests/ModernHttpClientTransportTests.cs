@@ -150,6 +150,29 @@ public class ModernHttpClientTransportTests
 	}
 
 	[Test]
+	public async Task OAuthTokenRefreshCancellation_ShouldNotReplayRequest()
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			OAuthTokenResponse("token-one"),
+			new ScriptedResponse(StatusCode: 401),
+			OAuthTokenResponse("token-two") with { Delay = TimeSpan.FromMilliseconds(500) });
+		string authApp = new Uri(server.BaseUri, "connect/token").ToString();
+		using CreatioClient client = new(server.BaseUri.ToString(), authApp, "client", "secret");
+		using CancellationTokenSource cancellation = new(TimeSpan.FromMilliseconds(150));
+
+		Func<Task> act = () => client.ExecuteGetRequestAsync(
+			new Uri(server.BaseUri, "data").ToString(), cancellationToken: cancellation.Token);
+
+		await act.Should().ThrowAsync<OperationCanceledException>();
+		IReadOnlyList<CapturedRequest> requests = await capture;
+		requests.Select(request => request.Target).Should().ContainInOrder(
+			"/connect/token", "/data", "/connect/token");
+		requests.Count(request => request.Target == "/connect/token").Should().Be(2);
+		requests.Count(request => request.Target == "/data").Should().Be(1);
+	}
+
+	[Test]
 	public async Task ExecuteGetRequestAsync_ShouldHonorCallerCancellationWithoutRetrying()
 	{
 		await using ScriptedLoopbackHttpServer server = new();
