@@ -30,7 +30,8 @@ and incorporate it safely without touching the primary checkout or unrelated use
 6. Run the repository's `agentic-code-review` pre-PR gate on the complete branch diff, resolve Blocker and High
    findings, and rerun affected validation.
 7. Push the claimed branch and immediately open a draft pull request linked with `Fixes #<number>`. Include the
-   root cause, observable behavior change, compatibility notes, and exact validation evidence.
+   root cause, observable behavior change, compatibility notes, and exact validation evidence. Verify GitHub
+   shows the pull request in the issue's Development section and recognizes the closing relationship.
 
 ## QA and completion
 
@@ -43,6 +44,8 @@ and incorporate it safely without touching the primary checkout or unrelated use
    required CI is green.
 4. Mark the draft ready only when the repair is complete, validation is recorded, and no blocking findings remain.
    Do not wait for human review or merge unless the user or repository policy requests it.
+5. Keep the issue open until the pull request merges. After merge, verify the closing relationship closed the
+   issue; if it did not, report the failed linkage instead of silently closing it by hand.
 
 Report the issue, branch, worktree, pull request, stage, commits, validation, review findings, skipped checks, and
 remaining dependency or decision.

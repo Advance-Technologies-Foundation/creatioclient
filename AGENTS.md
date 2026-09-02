@@ -121,14 +121,21 @@ and any explicitly requested live E2E validation. Report skipped E2E rather than
 
 # GitHub issue workflow
 
-When the user authorizes taking, triaging, fixing, implementing, or resolving an issue in
-`Advance-Technologies-Foundation/creatioclient`, use the repository's `creatioclient-issue-workflow` skill.
-Do not claim an issue during brainstorming, explanation, planning, or review-only work.
+When the user authorizes a change intended for a pull request in
+`Advance-Technologies-Foundation/creatioclient`, use the repository's `creatioclient-issue-workflow` skill,
+including when the request did not start from an issue. Do not claim or create an issue during brainstorming,
+explanation, planning, or review-only work.
 
-The workflow is `claim -> investigate -> repair and verify`. It uses GitHub's assignee, the organization-level
-`Mitigation stage` issue field, Development links, issue type, labels, and a draft pull request. Do not introduce
-a separate locking or state mechanism. The phase skills under `.ai/skills/` are the behavioral source of truth;
-the matching `.codex/skills/` and `.claude/skills/` files are discovery adapters only.
+Every pull request must have one open repository issue before its branch is created. If an authorized change has
+no issue, search for an existing matching issue and create a documented issue when none exists. Then claim it,
+create its linked Development branch, investigate, repair, and open a pull request containing `Fixes #<number>`.
+Keep the issue open during implementation; the merged pull request closes it. Do not manually close it early.
+
+The workflow is `document issue -> claim and branch -> investigate -> repair and verify -> pull request -> merge
+closes issue`. It uses GitHub's assignee, the organization-level `Mitigation stage` issue field, Development links,
+issue type, labels, and a draft pull request. Do not introduce a separate locking or state mechanism. The phase
+skills under `.ai/skills/` are the behavioral source of truth; the matching `.codex/skills/` and
+`.claude/skills/` files are discovery adapters only.
 
 # Agentic code review
 

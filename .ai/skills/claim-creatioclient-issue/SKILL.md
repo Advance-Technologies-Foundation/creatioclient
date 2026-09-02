@@ -8,11 +8,15 @@ description: Claim an open Advance-Technologies-Foundation/creatioclient issue b
 Claiming means assigning the authenticated GitHub user. The Development branch provides visibility and
 navigation; it is not a distributed lock.
 
+The repository issue must already exist and remain open. Never create a branch first and document the work later.
+
 ## Claim
 
 1. Run the `creatioclient-issue-workflow` read-only `Mitigation stage` readiness check. Stop before any GitHub
    write if it fails.
-2. Read the live issue, state, assignees, Development branches, and pull requests.
+2. Read the live issue, state, documentation, assignees, Development branches, and pull requests. Stop if the
+   issue is a placeholder that does not state the problem or outcome and acceptance criteria; document it before
+   continuing.
 3. Resolve the authenticated login with `gh api user --jq .login`; never use a display name.
 4. Handle current state:
    - closed issue: stop unless the user explicitly authorized reopening it;
