@@ -151,7 +151,7 @@ namespace Creatio.Client
 				using (HttpResponseMessage response = await client.PostAsync(authApp, httpContent, cancellationToken)
 					.ConfigureAwait(false)) {
 					response.EnsureSuccessStatusCode();
-					string content = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
+					string content = await response.Content.ReadAsStringAsync().ConfigureAwait(false); // NOSONAR: PostAsync buffered the response content under cancellationToken.
 					TokenResponse token = JsonConvert.DeserializeObject<TokenResponse>(content);
 					if (string.IsNullOrWhiteSpace(token?.AccessToken)) {
 						throw new InvalidOperationException("The OAuth token response did not contain an access token.");
@@ -256,22 +256,18 @@ namespace Creatio.Client
 						return await HttpClient.SendAsync(request, completionOption, timeout.Token)
 							.ConfigureAwait(false);
 					} catch (CreatioSessionExpiredException exception) {
-						if (sessionRecovery.Attempted || cancellationToken.IsCancellationRequested) {
-							return exception.Response;
-						}
-						using (exception.Response) {
-							sessionRecovery.Attempted = true;
-							await _authenticationHandler.RecoverExpiredSessionAsync(
-								exception.AuthenticationGeneration, timeout.Token).ConfigureAwait(false);
+						HttpResponseMessage expiredResponse = await RecoverAuthenticationAsync(exception.Response,
+							exception.AuthenticationGeneration, sessionRecovery, cancellationToken, timeout.Token,
+							_authenticationHandler.RecoverExpiredSessionAsync).ConfigureAwait(false);
+						if (expiredResponse != null) {
+							return expiredResponse;
 						}
 					} catch (CreatioBearerTokenExpiredException exception) {
-						if (sessionRecovery.Attempted || cancellationToken.IsCancellationRequested) {
-							return exception.Response;
-						}
-						using (exception.Response) {
-							sessionRecovery.Attempted = true;
-							await _authenticationHandler.RecoverExpiredBearerTokenAsync(
-								exception.AuthenticationGeneration, timeout.Token).ConfigureAwait(false);
+						HttpResponseMessage expiredResponse = await RecoverAuthenticationAsync(exception.Response,
+							exception.AuthenticationGeneration, sessionRecovery, cancellationToken, timeout.Token,
+							_authenticationHandler.RecoverExpiredBearerTokenAsync).ConfigureAwait(false);
+						if (expiredResponse != null) {
+							return expiredResponse;
 						}
 					} catch when (attempt < maxAttempts && !cancellationToken.IsCancellationRequested) {
 						attempt++;
@@ -284,6 +280,21 @@ namespace Creatio.Client
 				}
 			}
 			throw new InvalidOperationException("The HTTP retry loop completed without a response.");
+		}
+
+		private static async Task<HttpResponseMessage> RecoverAuthenticationAsync(HttpResponseMessage response,
+			int authenticationGeneration, SessionRecoveryState sessionRecovery,
+			CancellationToken cancellationToken, CancellationToken timeoutToken,
+			Func<int, CancellationToken, Task> recover)
+		{
+			if (sessionRecovery.Attempted || cancellationToken.IsCancellationRequested) {
+				return response;
+			}
+			using (response) {
+				sessionRecovery.Attempted = true;
+				await recover(authenticationGeneration, timeoutToken).ConfigureAwait(false);
+			}
+			return null;
 		}
 
 		private static HttpRequestMessage CreateJsonRequest(HttpMethod method, string url, string requestData,
