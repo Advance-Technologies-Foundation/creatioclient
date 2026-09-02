@@ -1,0 +1,27 @@
+[agents.bug-reviewer]
+description = "Find correctness, edge-case, and compatibility defects in CreatioClient changes."
+config_file = "./agents/bug-reviewer.toml"
+
+[agents.code-quality-reviewer]
+description = "Review maintainability, public API design, and consistency with repository conventions."
+config_file = "./agents/code-quality-reviewer.toml"
+
+[agents.security-reviewer]
+description = "Review authentication, secrets, redirects, URLs, cookies, TLS, and credential boundaries."
+config_file = "./agents/security-reviewer.toml"
+
+[agents.performance-reviewer]
+description = "Review async I/O, pooling, allocation, concurrency, cancellation, and resource lifetime."
+config_file = "./agents/performance-reviewer.toml"
+
+[agents.testing-reviewer]
+description = "Review regression coverage, test quality, and net8.0/net10.0 compatibility."
+config_file = "./agents/testing-reviewer.toml"
+
+[agents.intent-agent]
+description = "Check that the change delivers the stated outcome without scope drift."
+config_file = "./agents/intent-agent.toml"
+
+[agents.kiss-agent]
+description = "Find unnecessary abstractions, state, compatibility layers, and recovery machinery."
+config_file = "./agents/kiss-agent.toml"
