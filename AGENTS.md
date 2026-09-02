@@ -119,6 +119,17 @@ For a user-facing feature, update `README.md` and the example when useful. Befor
 focused tests, both supported test targets, the scoped authentication coverage gate when that pipeline changed,
 and any explicitly requested live E2E validation. Report skipped E2E rather than implying it ran.
 
+# GitHub issue workflow
+
+When the user authorizes taking, triaging, fixing, implementing, or resolving an issue in
+`Advance-Technologies-Foundation/creatioclient`, use the repository's `creatioclient-issue-workflow` skill.
+Do not claim an issue during brainstorming, explanation, planning, or review-only work.
+
+The workflow is `claim -> investigate -> repair and verify`. It uses GitHub's assignee, the organization-level
+`Mitigation stage` issue field, Development links, issue type, labels, and a draft pull request. Do not introduce
+a separate locking or state mechanism. The phase skills under `.ai/skills/` are the behavioral source of truth;
+the matching `.codex/skills/` and `.claude/skills/` files are discovery adapters only.
+
 # Agentic code review
 
 Tool-neutral skill and reviewer instructions live under `.ai/`. Treat those files as the only behavioral source
