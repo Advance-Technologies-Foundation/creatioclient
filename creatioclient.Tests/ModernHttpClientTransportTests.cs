@@ -14,6 +14,9 @@ namespace Creatio.Client.Tests;
 [TestFixture]
 public class ModernHttpClientTransportTests
 {
+	private static ScriptedResponse OAuthTokenResponse(string accessToken) => new(
+		Body: $"{{\"access_token\":\"{accessToken}\",\"expires_in\":3600,\"token_type\":\"Bearer\"}}");
+
 	[Test]
 	public async Task ExecuteGetRequestAsync_ShouldReturnRealResponseWithStatusHeadersAndContent()
 	{
@@ -63,6 +66,110 @@ public class ModernHttpClientTransportTests
 		response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
 		requests.Should().ContainSingle();
 		requests[0].Headers["Authorization"].Should().Be("Bearer token");
+	}
+
+	[TestCase(false)]
+	[TestCase(true)]
+	public async Task OAuthClientCredentialsUnauthorized_ShouldRefreshAndReplayRequest(bool useFactory)
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			OAuthTokenResponse("token-one"),
+			new ScriptedResponse(StatusCode: 401),
+			OAuthTokenResponse("token-two"),
+			new ScriptedResponse(Body: "recovered"));
+		string authApp = new Uri(server.BaseUri, "connect/token").ToString();
+		using CreatioClient client = useFactory
+			? CreatioClient.CreateOAuth20Client(server.BaseUri.ToString(), authApp, "client", "secret")
+			: new CreatioClient(server.BaseUri.ToString(), authApp, "client", "secret");
+
+		using HttpResponseMessage response = await client.ExecutePostRequestAsync(
+			new Uri(server.BaseUri, "data").ToString(), "{\"value\":42}");
+		IReadOnlyList<CapturedRequest> requests = await capture;
+
+		response.StatusCode.Should().Be(HttpStatusCode.OK);
+		(await response.Content.ReadAsStringAsync()).Should().Be("recovered");
+		requests.Select(request => request.Target).Should().ContainInOrder(
+			"/connect/token", "/data", "/connect/token", "/data");
+		requests.Where(request => request.Target == "/connect/token")
+			.Select(request => System.Text.Encoding.UTF8.GetString(request.Body))
+			.Should().OnlyContain(body =>
+				body == "client_id=client&client_secret=secret&grant_type=client_credentials");
+		requests.Where(request => request.Target == "/data").Select(request => request.Headers["Authorization"])
+			.Should().ContainInOrder("Bearer token-one", "Bearer token-two");
+		requests.Where(request => request.Target == "/data").Select(request => request.Method)
+			.Should().OnlyContain(method => method == "POST");
+		requests.Where(request => request.Target == "/data")
+			.Select(request => System.Text.Encoding.UTF8.GetString(request.Body))
+			.Should().OnlyContain(body => body == "{\"value\":42}");
+	}
+
+	[Test]
+	public async Task OAuthClientCredentialsUnauthorizedAfterRefresh_ShouldReturnSecondUnauthorized()
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			OAuthTokenResponse("token-one"),
+			new ScriptedResponse(StatusCode: 401),
+			OAuthTokenResponse("token-two"),
+			new ScriptedResponse(StatusCode: 401));
+		string authApp = new Uri(server.BaseUri, "connect/token").ToString();
+		using CreatioClient client = new(server.BaseUri.ToString(), authApp, "client", "secret");
+
+		using HttpResponseMessage response = await client.ExecuteGetRequestAsync(
+			new Uri(server.BaseUri, "data").ToString());
+		IReadOnlyList<CapturedRequest> requests = await capture;
+
+		response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+		requests.Count(request => request.Target == "/connect/token").Should().Be(2);
+		requests.Count(request => request.Target == "/data").Should().Be(2);
+	}
+
+	[TestCase(false)]
+	[TestCase(true)]
+	public async Task OAuthTokenFailure_ShouldPreserveConstructionFailureShape(bool useFactory)
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			new ScriptedResponse(StatusCode: 500));
+		string authApp = new Uri(server.BaseUri, "connect/token").ToString();
+
+		Action act = () => {
+			using CreatioClient client = useFactory
+				? CreatioClient.CreateOAuth20Client(server.BaseUri.ToString(), authApp, "client", "secret")
+				: new CreatioClient(server.BaseUri.ToString(), authApp, "client", "secret");
+		};
+
+		if (useFactory) {
+			act.Should().Throw<AggregateException>()
+				.Which.InnerException.Should().BeOfType<HttpRequestException>();
+		} else {
+			act.Should().Throw<HttpRequestException>().Which.Should().NotBeOfType<AggregateException>();
+		}
+		(await capture).Should().ContainSingle();
+	}
+
+	[Test]
+	public async Task OAuthTokenRefreshCancellation_ShouldNotReplayRequest()
+	{
+		await using ScriptedLoopbackHttpServer server = new();
+		Task<IReadOnlyList<CapturedRequest>> capture = server.CaptureAsync(
+			OAuthTokenResponse("token-one"),
+			new ScriptedResponse(StatusCode: 401),
+			OAuthTokenResponse("token-two") with { Delay = TimeSpan.FromMilliseconds(500) });
+		string authApp = new Uri(server.BaseUri, "connect/token").ToString();
+		using CreatioClient client = new(server.BaseUri.ToString(), authApp, "client", "secret");
+		using CancellationTokenSource cancellation = new(TimeSpan.FromMilliseconds(150));
+
+		Func<Task> act = () => client.ExecuteGetRequestAsync(
+			new Uri(server.BaseUri, "data").ToString(), cancellationToken: cancellation.Token);
+
+		await act.Should().ThrowAsync<OperationCanceledException>();
+		IReadOnlyList<CapturedRequest> requests = await capture;
+		requests.Select(request => request.Target).Should().ContainInOrder(
+			"/connect/token", "/data", "/connect/token");
+		requests.Count(request => request.Target == "/connect/token").Should().Be(2);
+		requests.Count(request => request.Target == "/data").Should().Be(1);
 	}
 
 	[Test]
@@ -955,6 +1062,31 @@ public class ModernHttpClientTransportTests
 		await Task.WhenAll(first, second);
 
 		inner.LoginCount.Should().Be(1);
+	}
+
+	[Test]
+	public async Task ConcurrentExpiredOAuthRecoveries_ShouldShareOneTokenRefresh()
+	{
+		int refreshCount = 0;
+		TaskCompletionSource<bool> refreshStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+		TaskCompletionSource<bool> releaseRefresh = new(TaskCreationOptions.RunContinuationsAsynchronously);
+		async Task Refresh(CancellationToken cancellationToken)
+		{
+			Interlocked.Increment(ref refreshCount);
+			refreshStarted.TrySetResult(true);
+			await releaseRefresh.Task.WaitAsync(cancellationToken);
+		}
+		using CreatioAuthenticationHandler authentication = new(new Uri("https://creatio.test/"),
+			new CookieContainer(), null, null, null, () => "token", () => null, () => true, true,
+			new SequenceHandler(), Refresh);
+
+		Task first = authentication.RecoverExpiredBearerTokenAsync(0, CancellationToken.None);
+		await refreshStarted.Task;
+		Task second = authentication.RecoverExpiredBearerTokenAsync(0, CancellationToken.None);
+		releaseRefresh.TrySetResult(true);
+		await Task.WhenAll(first, second);
+
+		refreshCount.Should().Be(1);
 	}
 
 	[Test]

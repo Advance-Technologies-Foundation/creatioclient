@@ -23,6 +23,7 @@ namespace Creatio.Client
 		private readonly string _userPassword;
 		private readonly ICredentials _credentials;
 		private readonly Func<string> _bearerToken;
+		private readonly Func<CancellationToken, Task> _refreshBearerToken;
 		private readonly Func<int?> _timeZoneOffset;
 		private readonly Func<bool> _skipPing;
 		private readonly bool _isNetCore;
@@ -34,7 +35,8 @@ namespace Creatio.Client
 
 		public CreatioAuthenticationHandler(Uri appUri, CookieContainer cookies, string userName,
 			string userPassword, ICredentials credentials, Func<string> bearerToken,
-			Func<int?> timeZoneOffset, Func<bool> skipPing, bool isNetCore, HttpMessageHandler innerHandler)
+			Func<int?> timeZoneOffset, Func<bool> skipPing, bool isNetCore, HttpMessageHandler innerHandler,
+			Func<CancellationToken, Task> refreshBearerToken = null)
 		{
 			_appUri = EnsureTrailingSlash(appUri);
 			_cookies = cookies;
@@ -42,6 +44,7 @@ namespace Creatio.Client
 			_userPassword = userPassword;
 			_credentials = credentials;
 			_bearerToken = bearerToken;
+			_refreshBearerToken = refreshBearerToken;
 			_timeZoneOffset = timeZoneOffset;
 			_skipPing = skipPing;
 			_isNetCore = isNetCore;
@@ -79,8 +82,8 @@ namespace Creatio.Client
 			if (!IsTrustedOrigin(request.RequestUri)) {
 				throw new InvalidOperationException("CreatioClient cannot send authenticated requests to a different origin.");
 			}
+			int authenticationGeneration = Volatile.Read(ref _authenticationGeneration);
 			string token = _bearerToken();
-			int authenticationGeneration = 0;
 			if (!string.IsNullOrEmpty(token)) {
 				request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 			} else {
@@ -90,8 +93,11 @@ namespace Creatio.Client
 			}
 			HttpResponseMessage response = await SendInnerAsync(request, cancellationToken,
 				stopAtAuthenticationRedirect: string.IsNullOrEmpty(token)).ConfigureAwait(false);
-			if (string.IsNullOrEmpty(token)
-				&& IsExpiredSessionResponse(response, authenticationGeneration)) {
+			if (!string.IsNullOrEmpty(token) && _refreshBearerToken != null
+				&& response.StatusCode == HttpStatusCode.Unauthorized) {
+				throw new CreatioBearerTokenExpiredException(authenticationGeneration, response);
+			}
+			if (string.IsNullOrEmpty(token) && IsExpiredSessionResponse(response, authenticationGeneration)) {
 				throw new CreatioSessionExpiredException(authenticationGeneration, response);
 			}
 			return response;
@@ -107,6 +113,21 @@ namespace Creatio.Client
 				}
 				InvalidateSession();
 				await AuthenticateAsync(cancellationToken).ConfigureAwait(false);
+			} finally {
+				_loginLock.Release();
+			}
+		}
+
+		public async Task RecoverExpiredBearerTokenAsync(int authenticationGeneration,
+			CancellationToken cancellationToken)
+		{
+			await _loginLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+			try {
+				if (Volatile.Read(ref _authenticationGeneration) != authenticationGeneration) {
+					return;
+				}
+				await _refreshBearerToken(cancellationToken).ConfigureAwait(false);
+				Interlocked.Increment(ref _authenticationGeneration);
 			} finally {
 				_loginLock.Release();
 			}
@@ -575,6 +596,21 @@ namespace Creatio.Client
 		internal CreatioSessionExpiredException(int authenticationGeneration,
 			HttpResponseMessage response)
 			: base("The Creatio session expired and must be authenticated again.")
+		{
+			AuthenticationGeneration = authenticationGeneration;
+			Response = response;
+		}
+
+		internal int AuthenticationGeneration { get; }
+
+		internal HttpResponseMessage Response { get; }
+	}
+
+	internal sealed class CreatioBearerTokenExpiredException : HttpRequestException
+	{
+		internal CreatioBearerTokenExpiredException(int authenticationGeneration,
+			HttpResponseMessage response)
+			: base("The OAuth access token expired and must be refreshed.")
 		{
 			AuthenticationGeneration = authenticationGeneration;
 			Response = response;

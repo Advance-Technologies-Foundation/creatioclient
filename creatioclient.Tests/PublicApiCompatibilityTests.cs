@@ -59,6 +59,9 @@ public class PublicApiCompatibilityTests
 
 		actual.Should().Contain(expected,
 			because: "constructor parameter order and optional defaults are source and binary compatibility contracts");
+		actual.Should().Contain(
+			"System.String appUrl, System.String authApp, System.String clientId, System.String clientSecret, System.Boolean isNetCore=False",
+			because: "OAuth client credentials should be available through a regular constructor");
 	}
 
 	[Test]
