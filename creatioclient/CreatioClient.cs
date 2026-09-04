@@ -22,6 +22,13 @@ namespace Creatio.Client
 
 	public class CreatioClient : IAsyncCreatioClient, IDisposable
 	{
+		/// <summary>
+		/// Sentinel for "no byte ceiling" on the bounded download plumbing. Negative rather than
+		/// <see cref="long.MaxValue"/> so the check is a cheap sign test and a caller cannot accidentally
+		/// request an unbounded transfer by passing a very large number.
+		/// </summary>
+		private const long Unbounded = -1;
+
 
 		#region Constants: Private
 
@@ -776,6 +783,19 @@ namespace Creatio.Client
 			int requestTimeout = 100000, CancellationToken cancellationToken = default(CancellationToken)) =>
 			DownloadToFileAsync(HttpMethod.Get, url, filePath, null, requestTimeout, cancellationToken);
 
+		/// <inheritdoc />
+		public Task<HttpResponseMessage> DownloadFileByGetBoundedAsync(string url, string filePath,
+			long maxBytes, int requestTimeout = 100000,
+			CancellationToken cancellationToken = default(CancellationToken))
+		{
+			if (maxBytes < 0) {
+				throw new ArgumentOutOfRangeException(nameof(maxBytes), maxBytes,
+					"A byte ceiling must be zero or greater. Call DownloadFileByGetAsync for an unbounded download.");
+			}
+			return DownloadToFileAsync(HttpMethod.Get, url, filePath, null, requestTimeout, cancellationToken,
+				maxBytes, streamEveryStatusToFile: true);
+		}
+
 		public string ExecuteGetRequest(string url, int requestTimeout = 100000, int maxAttempts = 1, int delaySec = 1) {
 			EnsureLegacyAuthentication();
 			try {
@@ -864,7 +884,8 @@ namespace Creatio.Client
 		}
 
 		private async Task<HttpResponseMessage> DownloadToFileAsync(HttpMethod method, string url, // NOSONAR: retry/streaming branches are kept together and fully characterized.
-			string filePath, string requestData, int requestTimeout, CancellationToken cancellationToken)
+			string filePath, string requestData, int requestTimeout, CancellationToken cancellationToken,
+			long maxBytes = Unbounded, bool streamEveryStatusToFile = false)
 		{
 			await EnsureAuthenticatedAsync(100_000, cancellationToken).ConfigureAwait(false);
 			int maxAttempts = Math.Max(1, _maxAttempts);
@@ -882,25 +903,33 @@ namespace Creatio.Client
 							.ConfigureAwait(false);
 						if (!response.IsSuccessStatusCode) {
 							if (attempt == maxAttempts) {
-								await BufferResponseContentAsync(response, timeout.Token).ConfigureAwait(false);
+								// The bounded entry points route the error body through the SAME counted copy loop
+								// as a successful one. Buffering it instead has two failures a caller cannot work
+								// around: the whole body enters memory with no ceiling, and no file is written, so
+								// a caller that reads the destination loses the actual server error to a
+								// FileNotFoundException.
+								if (streamEveryStatusToFile) {
+									await CopyResponseToFileBoundedAsync(response, filePath, maxBytes, timeout.Token)
+										.ConfigureAwait(false);
+								} else {
+									await BufferResponseContentAsync(response, timeout.Token).ConfigureAwait(false);
+								}
 								return response;
 							}
 							response.Dispose();
 							response = null;
 						} else {
-							Stream content = await response.Content.ReadAsStreamAsync().ConfigureAwait(false); // NOSONAR: netstandard2.0 has no token overload; reads below use the timeout token.
-							using (FileStream stream = new FileStream(filePath, FileMode.Create, FileAccess.Write,
-								FileShare.None, 81920, true)) {
-								byte[] buffer = new byte[81920];
-								int read;
-								while ((read = await content.ReadAsync(buffer, 0, buffer.Length, timeout.Token)
-									.ConfigureAwait(false)) != 0) {
-									await stream.WriteAsync(buffer, 0, read, timeout.Token).ConfigureAwait(false);
-								}
-							}
+							await CopyResponseToFileBoundedAsync(response, filePath, maxBytes, timeout.Token)
+								.ConfigureAwait(false);
 							return response;
 						}
-					} catch when (attempt < maxAttempts && !cancellationToken.IsCancellationRequested) {
+					}
+					// The ceiling is a CALLER contract, not a transport hiccup: retrying re-downloads the whole
+					// oversized body and cannot succeed, so it is excluded from the retry filter rather than
+					// swallowed by it.
+					catch (Exception exception) when (attempt < maxAttempts
+						&& !cancellationToken.IsCancellationRequested
+						&& !(exception is CreatioResponseTooLargeException)) {
 						response?.Dispose();
 					} catch {
 						response?.Dispose();
@@ -914,6 +943,59 @@ namespace Creatio.Client
 					.ConfigureAwait(false);
 			}
 			throw new InvalidOperationException("The download retry loop completed without a response.");
+		}
+
+		/// <summary>
+		/// Streams a response body to <paramref name="filePath"/>, counting bytes and refusing to write past
+		/// <paramref name="maxBytes"/>.
+		/// </summary>
+		/// <remarks>
+		/// The count is tested BEFORE each write, so the destination never exceeds the ceiling and at most one
+		/// buffer beyond it is read off the socket. Checking after the write, or measuring the file from another
+		/// task, both let an arbitrary amount through: the producer is not scheduled in step with the observer.
+		/// The partial file is deleted on the way out, so a refused transfer leaves no truncated body that a
+		/// caller could mistake for a complete one.
+		/// </remarks>
+		private static async Task CopyResponseToFileBoundedAsync(HttpResponseMessage response, string filePath,
+			long maxBytes, CancellationToken cancellationToken)
+		{
+			Stream content = await response.Content.ReadAsStreamAsync().ConfigureAwait(false); // NOSONAR: netstandard2.0 has no token overload; reads below use the supplied token.
+			long written = 0;
+			try {
+				using (FileStream stream = new FileStream(filePath, FileMode.Create, FileAccess.Write,
+					FileShare.None, 81920, true)) {
+					byte[] buffer = new byte[81920];
+					int read;
+					while ((read = await content.ReadAsync(buffer, 0, buffer.Length, cancellationToken)
+						.ConfigureAwait(false)) != 0) {
+						if (maxBytes >= 0 && written + read > maxBytes) {
+							throw new CreatioResponseTooLargeException(
+								response.StatusCode, written + read, maxBytes);
+						}
+						await stream.WriteAsync(buffer, 0, read, cancellationToken).ConfigureAwait(false);
+						written += read;
+					}
+				}
+			}
+			catch (CreatioResponseTooLargeException) {
+				DeleteQuietly(filePath);
+				throw;
+			}
+		}
+
+		private static void DeleteQuietly(string filePath)
+		{
+			try {
+				if (File.Exists(filePath)) {
+					File.Delete(filePath);
+				}
+			}
+			catch (IOException) {
+				// A leftover partial file is not worth replacing the real failure with a second exception.
+			}
+			catch (UnauthorizedAccessException) {
+				// Same reasoning as above.
+			}
 		}
 
 		private sealed class SessionRecoveryState
