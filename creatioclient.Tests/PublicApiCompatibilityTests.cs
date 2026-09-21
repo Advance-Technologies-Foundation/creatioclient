@@ -99,34 +99,39 @@ public class PublicApiCompatibilityTests
 	[Test]
 	public void IAsyncCreatioClient_ShouldAddCancellationAwareResponsesWithoutChangingLegacyInterface()
 	{
-		string[] expected = {
-			"CallConfigurationServiceAsync",
-			"DownloadAttachmentAsync",
-			"DownloadFileAsync",
-			"DownloadFileByGetAsync",
-			"ExecuteDeleteRequestAsync",
-			"ExecuteGetRequestAsync",
-			"ExecutePatchRequestAsync",
-			"ExecutePostRequestAsync",
-			"ExecutePutRequestAsync",
-			"LoginAsync",
-			"UploadAlmFileAsync",
-			"UploadAlmFileByChunkAsync",
-			"UploadAttachmentResponseAsync",
-			"UploadChunkAlmFileAsync",
-			"UploadFileAsync",
-			"UploadFile_originalAsync",
-			"UploadStaticFileAsync"
+		string[] frozen = {
+			"System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> CallConfigurationServiceAsync(System.String serviceName, System.String serviceMethod, System.String requestData, System.Int32 requestTimeout=100000, System.Threading.CancellationToken cancellationToken=)",
+			"System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> DownloadAttachmentAsync(System.String schemaName, System.Guid recordId, System.String filePath, System.Int32 timeout=100000, System.Threading.CancellationToken cancellationToken=)",
+			"System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> DownloadFileAsync(System.String url, System.String filePath, System.String requestData, System.Int32 requestTimeout=100000, System.Threading.CancellationToken cancellationToken=)",
+			"System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> DownloadFileByGetAsync(System.String url, System.String filePath, System.Int32 requestTimeout=100000, System.Threading.CancellationToken cancellationToken=)",
+			"System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> ExecuteDeleteRequestAsync(System.String url, System.String requestData, System.Int32 requestTimeout=10000, System.Int32 maxAttempts=1, System.Int32 delaySec=1, System.Threading.CancellationToken cancellationToken=)",
+			"System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> ExecuteGetRequestAsync(System.String url, System.Int32 requestTimeout=100000, System.Int32 maxAttempts=1, System.Int32 delaySec=1, System.Threading.CancellationToken cancellationToken=)",
+			"System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> ExecutePatchRequestAsync(System.String url, System.String requestData, System.Int32 requestTimeout=100000, System.Int32 maxAttempts=1, System.Int32 delaySec=1, System.Threading.CancellationToken cancellationToken=)",
+			"System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> ExecutePostRequestAsync(System.String url, System.String requestData, System.Int32 requestTimeout=100000, System.Int32 maxAttempts=1, System.Int32 delaySec=1, System.Threading.CancellationToken cancellationToken=)",
+			"System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> ExecutePutRequestAsync(System.String url, System.String requestData, System.Int32 requestTimeout=100000, System.Int32 maxAttempts=1, System.Int32 delaySec=1, System.Threading.CancellationToken cancellationToken=)",
+			"System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> LoginAsync(System.Int32 requestTimeout=100000, System.Threading.CancellationToken cancellationToken=)",
+			"System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> UploadAlmFileAsync(System.String url, System.String filePath, System.Int32 requestTimeout=100000, System.Threading.CancellationToken cancellationToken=)",
+			"System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> UploadAlmFileByChunkAsync(System.String url, System.String filePath, System.Int32 requestTimeout=100000, System.Threading.CancellationToken cancellationToken=)",
+			"System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> UploadAttachmentResponseAsync(Creatio.Client.Dto.FileUploadInfo uploadInfo, System.Int32 timeout=100000, System.Int32 chunkSize=1048576, System.Threading.CancellationToken cancellationToken=)",
+			"System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> UploadChunkAlmFileAsync(System.String url, System.Byte[] data, System.Int32 downloadedSize, System.Int32 totalSize, System.Int32 requestTimeout=100000, System.Threading.CancellationToken cancellationToken=)",
+			"System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> UploadFileAsync(System.String url, System.String filePath, System.Int32 defaultTimeout, System.Int32 chunkSize, System.Threading.CancellationToken cancellationToken)",
+			"System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> UploadFile_originalAsync(System.String url, System.String filePath, System.Int32 defaultTimeout=100000, System.Threading.CancellationToken cancellationToken=)",
+			"System.Threading.Tasks.Task<System.Net.Http.HttpResponseMessage> UploadStaticFileAsync(System.String url, System.String filePath, System.String folderName, System.Int32 defaultTimeout, System.Int32 chunkSize, System.Threading.CancellationToken cancellationToken)"
 		};
 
-		MethodInfo[] methods = typeof(IAsyncCreatioClient).GetMethods()
-			.Where(method => expected.Contains(method.Name)
-				&& method.ReturnType == typeof(Task<HttpResponseMessage>))
+		string[] actual = typeof(IAsyncCreatioClient).GetMethods()
+			.Where(method => !method.IsSpecialName)
+			.Select(FormatMethod)
 			.ToArray();
 
-		methods.Select(method => method.Name).Should().Contain(expected);
-		methods.Should().OnlyContain(method => method.ReturnType == typeof(Task<HttpResponseMessage>));
-		methods.Should().OnlyContain(method => method.GetParameters().Last().ParameterType == typeof(CancellationToken));
+		actual.Should().BeEquivalentTo(frozen,
+			because: "an external implementation of the published IAsyncCreatioClient that lacks a newly added "
+			+ "member throws TypeLoadException at load time, so this interface is closed: put a new capability "
+			+ "on CreatioClient or on a derived interface instead of extending this list");
+		typeof(IAsyncCreatioClient).GetProperties().Should().BeEmpty(
+			because: "a property added to the published interface breaks an external implementation exactly as a method does, and the frozen method set cannot see one");
+		typeof(IAsyncCreatioClient).GetEvents().Should().BeEmpty(
+			because: "an event added to the published interface breaks an external implementation exactly as a method does, and the frozen method set cannot see one");
 		typeof(ICreatioClient).GetMethods().Should().NotContain(
 			method => method.ReturnType == typeof(Task<HttpResponseMessage>),
 			because: "adding abstract members to the established interface would break existing implementers");
@@ -163,6 +168,10 @@ public class PublicApiCompatibilityTests
 			new[] { typeof(string), typeof(byte[]), typeof(string), typeof(string), typeof(int),
 				typeof(CancellationToken) }).Should().NotBeNull(
 			because: "the Image API needs a response-returning binary operation without changing an established interface");
+		typeof(CreatioClient).GetMethod(nameof(CreatioClient.DownloadFileByGetBoundedAsync),
+			new[] { typeof(string), typeof(string), typeof(long), typeof(int),
+				typeof(CancellationToken) }).Should().NotBeNull(
+			because: "the bounded download is reachable on the concrete client without extending an established interface");
 		typeof(CreatioClient).GetProperty(nameof(CreatioClient.SkipPing)).Should().NotBeNull();
 		typeof(CreatioClient).GetProperty(nameof(CreatioClient.TimeZoneOffset)).Should().NotBeNull();
 		typeof(CreatioClient).GetMethod("OnMessageReceived", BindingFlags.Instance | BindingFlags.NonPublic)!

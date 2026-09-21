@@ -82,6 +82,21 @@ string content = await response.Content.ReadAsStringAsync();
 `CreatioClient` implements the additive `IAsyncCreatioClient` interface. The original
 `ICreatioClient` interface is unchanged so existing third-party implementations remain binary compatible.
 
+A GET download can be given a hard byte ceiling:
+```csharp
+using HttpResponseMessage response = await client.DownloadFileByGetBoundedAsync(
+    url, filePath, maxBytes: 64L * 1024 * 1024, cancellationToken: cancellationToken);
+```
+The count is tested before each write, so the destination never exceeds `maxBytes` and at most one read
+buffer beyond it is taken off the socket. A crossing throws `CreatioResponseTooLargeException`, carrying the
+HTTP status, the observed count and the limit, and the partial file is deleted. Unlike
+`DownloadFileByGetAsync`, every status streams through that same counted loop, so an error body reaches the
+file too: read the status from the response and the server's message from the file. The ceiling is not
+retried, because another attempt re-downloads the same oversized body.
+
+This method is available on `CreatioClient` only: `IAsyncCreatioClient` is closed, because an external
+implementation of it that lacks a newly added member fails to load with a `TypeLoadException`.
+
 The caller owns every `HttpResponseMessage` returned by an async operation and must dispose it.
 `CreatioClient` owns its shared `HttpClient` and should also be disposed when it is no longer needed.
 The existing synchronous methods remain available and retain their string, file, and exception behavior.
